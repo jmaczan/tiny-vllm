@@ -240,8 +240,6 @@ void prefill(std::vector<int> &prompt, std::queue<std::vector<int>> &queue, int 
                                                     CUBLAS_COMPUTE_32F,
                                                     CUBLAS_GEMM_DEFAULT);
 
-        // RoPE now
-
         rope(q_proj, prompt_len, EMBEDDING_LENGTH);
         rope(k_proj_temp_buf, prompt_len, KV_DIM);
 
@@ -562,6 +560,8 @@ int main(int argc, char *argv[])
         std::cerr << "cuBLAS init failed, status: " << status << "\n";
         return 1;
     }
+
+    initRopeFreqs();
 
     Weights weights{};
     if (loadWeights(weights) != 0)
