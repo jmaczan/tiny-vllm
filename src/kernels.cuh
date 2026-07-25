@@ -18,9 +18,9 @@ void residualAdd(__nv_bfloat16 *input, __nv_bfloat16 *input_embeds, int num_toke
 void silu(__nv_bfloat16 *a, __nv_bfloat16 *b, int num_tokens);
 
 // decode
-void embeddingGatherDecode(int *gpu_last_tokens, int num_tokens, __nv_bfloat16 *output, __nv_bfloat16 *embed_tokens);
+void embeddingGatherDecode(int *gpu_last_tokens, int num_tokens, __nv_bfloat16 *output, __nv_bfloat16 *embed_tokens, cudaStream_t stream = 0);
 void ropeDecode(__nv_bfloat16 *input, int position_in_sequence, int proj_dim);
 void softmaxDecode(__nv_bfloat16 *input, int seq_len);
 
 // pagedattn
-void pagedAttention(int layer, int num_active_slots, __nv_bfloat16 *q_proj, __nv_bfloat16 *kv_cache, int *block_table_gpu, int *gpu_seq_lens, int *gpu_active_slots, __nv_bfloat16 *output);
+void pagedAttention(int layer, int num_active_slots, __nv_bfloat16 *q_proj, __nv_bfloat16 *kv_cache, int *block_table_gpu, int *gpu_seq_lens, int *gpu_active_slots, __nv_bfloat16 *output, cudaStream_t stream = 0);

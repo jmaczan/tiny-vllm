@@ -3,8 +3,9 @@ cmake_minimum_required(VERSION 3.24)
 option(USE_HIP "Build with HIP for AMD GPUs" OFF)
 
 if(NOT USE_HIP)
-    set(CMAKE_CUDA_COMPILER "/opt/cuda/bin/nvcc")
-    set(CUDACXX "/opt/cuda/bin/nvcc")
+    set(CMAKE_CUDA_ARCHITECTURES 86)  # 默认是120，但我的3060算力只有86
+   # set(CMAKE_CUDA_COMPILER "/opt/cuda/bin/nvcc")
+   # set(CUDACXX "/opt/cuda/bin/nvcc")
 endif()
 
 if(USE_HIP)
@@ -17,11 +18,12 @@ endif()
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CUDA_ARCHITECTURES 86)  # 默认是120，但我的3060算力只有86
 
 if(NOT USE_HIP)
     set(CMAKE_CUDA_STANDARD 17)
     set(CMAKE_CUDA_STANDARD_REQUIRED ON)
-    set(CMAKE_CUDA_ARCHITECTURES 120)
+    
 endif()
 
 if(NOT CMAKE_BUILD_TYPE)
@@ -49,6 +51,8 @@ endif()
 add_executable(tiny-vllm
     src/main.cpp
     src/kernels.cu
+    src/request_scheduler.cpp
+    src/prefix_cache.cpp
 )
 
 if(USE_HIP)
