@@ -67,11 +67,4 @@ cmake --build build -j
 
 ---
 
-## 基准与验证建议
-
-- 对比项：APC on/off、Chunked prefill on/off、CUDA Graph on/off、不同 batch/slot 数量、不同 prompt 长度分布。
-- 指标：吞吐 (tokens/sec)、平均与 P95 延迟、GPU 内存占用、KV-cache hit rate、以及生成 correctness（token index/样本输出）。
-- 建议先在小样本上验证输出正确性（检查 `Output token:` 日志，确认 token index 非全 0），再做大规模吞吐测试。
-
----
 
