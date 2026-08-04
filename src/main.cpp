@@ -568,6 +568,9 @@ int main(int argc, char *argv[])
         return 1;
     }
 
+    // Frequency initialization
+    init_rope_frequencies(HEAD_DIM, MAX_SEQ_LEN, 500000.0f, 32.0f, 1.0f, 4.0f, 8192);
+
     // allocator for pagedattn
     __nv_bfloat16 *kv_cache;
     cudaMalloc(&kv_cache, KV_CACHE_SIZE_BYTES);
