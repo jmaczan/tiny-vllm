@@ -1,6 +1,7 @@
 #include "cuda_to_hip.h"
 #include "kernels.cuh"
 #include <iostream>
+#include <vector>
 
 // TODO perhaps share these between main.cpp and kernels.cu to not duplicate them?
 
@@ -16,6 +17,11 @@ constexpr int BLOCK_SIZE = 16;    // TODO: tunable as well, defined the size of 
 constexpr int V_OFFSET = BLOCK_SIZE * KV_DIM * sizeof(__nv_bfloat16);
 constexpr int BLOCK_BYTES = V_OFFSET * 2;                    // * 2 because K and V
 constexpr int MAX_BLOCKS_PER_SEQ = MAX_SEQ_LEN / BLOCK_SIZE; // 2048 / 16 = 128
+
+
+float *d_inv_freq = nullptr; 
+float *d_cos_table = nullptr; // [max_seq_len, head_dim]
+float *d_sin_table = nullptr; // [max_seq_len, head_dim]
 
 // prefill / shared
 
@@ -87,23 +93,112 @@ void rmsNorm(__nv_bfloat16 *input, __nv_bfloat16 *output, __nv_bfloat16 *norm_we
 #endif
 }
 
-__global__ void ropeKernel(__nv_bfloat16 *input, int num_tokens, int proj_dim)
+void init_rope_frequencies(int head_dim, int max_seq_len, float rope_theta,
+                           float factor, float low_freq_factor,
+                           float high_freq_factor, int original_max_len)
 {
-    if (2 * threadIdx.x + 1 + blockIdx.x * proj_dim < num_tokens * proj_dim)
+    int half_dim = head_dim / 2;
+    std::vector<float> inv_freq(half_dim);
+    for (int i = 0; i < half_dim; i++)
     {
-        // TODO: precompute thetas, angles and perhaps sin/cos vals and reuse it across all kernel invocations
-        int double_i = 2 * (threadIdx.x % 32);
-        float theta = 1.0 / (pow(500000.0, ((float)double_i / HEAD_DIM)));
-        float angle = blockIdx.x * theta;
-        __nv_bfloat16 prev_2i = input[2 * threadIdx.x + blockIdx.x * proj_dim];
-        __nv_bfloat16 prev_2i_1 = input[2 * threadIdx.x + 1 + blockIdx.x * proj_dim];
-        input[2 * threadIdx.x + blockIdx.x * proj_dim] = (__nv_bfloat16)((float)prev_2i * cos(angle) - (float)prev_2i_1 * sin(angle));
-        input[2 * threadIdx.x + 1 + blockIdx.x * proj_dim] = (__nv_bfloat16)((float)prev_2i * sin(angle) + (float)prev_2i_1 * cos(angle));
+        inv_freq[i] = 1.0f / std::pow(rope_theta, (2.0f * i) / head_dim);
+    }
+    float low_freq_wavelen = (float)original_max_len / low_freq_factor;
+    float high_freq_wavelen = (float)original_max_len / high_freq_factor;
+
+    std::vector<float> inv_freq_llama = inv_freq;
+
+    for (int i = 0; i < half_dim; i++)
+    {
+        float wavelen = 2.0f * M_PI / inv_freq[i];
+
+        if (wavelen > low_freq_wavelen)
+        {
+            inv_freq_llama[i] = inv_freq[i] / factor;
+        }
+        else if (wavelen >= high_freq_wavelen)
+        {
+            float smooth = ((float)original_max_len / wavelen - low_freq_factor) / (high_freq_factor - low_freq_factor);
+            inv_freq_llama[i] = (1.0f - smooth) * (inv_freq[i] / factor) + smooth * inv_freq[i];
+        }
+    }
+
+    cudaMalloc(&d_inv_freq, half_dim * sizeof(float));
+    cudaMemcpy(d_inv_freq, inv_freq_llama.data(), half_dim * sizeof(float), cudaMemcpyHostToDevice);
+
+    std::vector<float> cos_table(max_seq_len * head_dim);
+    std::vector<float> sin_table(max_seq_len * head_dim);
+
+    for (int pos = 0; pos < max_seq_len; pos++)
+    {
+        for (int i = 0; i < half_dim; i++)
+        {
+            float angle = pos * inv_freq_llama[i];
+            float c = std::cos(angle);
+            float s = std::sin(angle);
+            cos_table[pos * head_dim + 2 * i] = c;
+            cos_table[pos * head_dim + 2 * i + 1] = c;
+            sin_table[pos * head_dim + 2 * i] = s;
+            sin_table[pos * head_dim + 2 * i + 1] = s;
+        }
+    }
+
+    cudaMalloc(&d_cos_table, max_seq_len * head_dim * sizeof(float));
+    cudaMalloc(&d_sin_table, max_seq_len * head_dim * sizeof(float));
+    cudaMemcpy(d_cos_table, cos_table.data(),
+               max_seq_len * head_dim * sizeof(float), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_sin_table, sin_table.data(),
+               max_seq_len * head_dim * sizeof(float), cudaMemcpyHostToDevice);
+}
+
+void free_rope_frequencies(void)
+{
+    if (d_inv_freq)
+    {
+        cudaFree(d_inv_freq);
+        d_inv_freq = nullptr;
+    }
+    if (d_cos_table)
+    {
+        cudaFree(d_cos_table);
+        d_cos_table = nullptr;
+    }
+    if (d_sin_table)
+    {
+        cudaFree(d_sin_table);
+        d_sin_table = nullptr;
     }
 }
 
-// proj_dim: q_proj 2048, k_proj 512
-// num_threads: I want to use it for both q_proj and k_proj so need to parameterize num_threads (1024 for q_proj and 512 for k_proj)
+__global__ void ropeKernel_llama3(__nv_bfloat16 *input, int num_tokens, int proj_dim,
+                                  int head_dim, const float *cos_table, const float *sin_table)
+{
+    int token_idx = blockIdx.x;
+    int tid = threadIdx.x;
+    int half_proj = proj_dim / 2;
+    int half_dim = head_dim / 2;
+
+    if (tid >= half_proj)
+        return;
+
+    int head_idx = tid / half_dim;
+    int pair_idx = tid % half_dim;
+
+    int base = token_idx * proj_dim + head_idx * head_dim;
+    int idx1 = base + pair_idx;
+    int idx2 = base + pair_idx + half_dim;
+
+    float x1 = (float)input[idx1];
+    float x2 = (float)input[idx2];
+
+    int table_idx = token_idx * head_dim + pair_idx * 2;
+    float c = cos_table[table_idx];
+    float s = sin_table[table_idx];
+
+    input[idx1] = (__nv_bfloat16)(x1 * c - x2 * s);
+    input[idx2] = (__nv_bfloat16)(x1 * s + x2 * c);
+}
+
 void rope(__nv_bfloat16 *input, int num_tokens, int proj_dim)
 {
     int num_threads = proj_dim / 2;
@@ -113,12 +208,15 @@ void rope(__nv_bfloat16 *input, int num_tokens, int proj_dim)
         return;
     }
 
-    ropeKernel<<<num_tokens, num_threads>>>(input, num_tokens, proj_dim);
+    ropeKernel_llama3<<<num_tokens, num_threads>>>(
+        input, num_tokens, proj_dim, HEAD_DIM, d_cos_table, d_sin_table);
+
 #ifdef DEBUG
-    cudaError error = cudaGetLastError();
-    if (error != cudaError::cudaSuccess)
+    cudaError_t error = cudaGetLastError();
+    if (error != cudaSuccess)
     {
-        std::cout << "CUDA last error: " << cudaGetLastError() << std::endl;
+        std::cout << "CUDA error: " << cudaGetErrorString(error)
+                  << " (code: " << error << ")" << std::endl;
     }
 #endif
 }

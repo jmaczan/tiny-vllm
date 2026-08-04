@@ -11,6 +11,8 @@
 // prefill
 void embeddingGather(int *gpu_input_tokens, __nv_bfloat16 *gpu_input_embeds, __nv_bfloat16 *embed_tokens, int num_input_tokens);
 void rmsNorm(__nv_bfloat16 *input, __nv_bfloat16 *output, nv_bfloat16 *norm_weights, int num_tokens);
+void init_rope_frequencies(int head_dim, int max_seq_len, float rope_theta,float factor, float low_freq_factor,float high_freq_factor, int original_max_len);
+void free_rope_frequencies(void);
 void rope(__nv_bfloat16 *input, int num_tokens, int proj_dim);
 void causalMask(__nv_bfloat16 *input, int num_tokens);
 void softmax(__nv_bfloat16 *input, int num_tokens);
