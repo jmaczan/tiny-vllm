@@ -15,7 +15,7 @@
 
 相较于原始单路径参考实现，本 fork 引入了多项适合长上下文 benchmark 的运行时与调度能力：
 
-- `PrefixCacheManager`
+- PrefixCacheManager
   - 实现真实的 prefix 哈希复用与 block 级 lookup / insertion 统计。
   - 产生可量化的 KV-cache 命中率，而不是占位式或 dummy 输出。
 
@@ -51,20 +51,20 @@
   - `BLOCK_SIZE = 128`
   - `N_LAYERS = 16`
 
-## 已验证的 benchmark 结果
+## 已验证的长前缀比较结果
 
-下表中的数字是在当前工作区中，使用同一条长前缀请求轨迹和同一长 token workload 下做过重新验证的结果。
+以下对比结果是在同一条长前缀请求轨迹、同一长 token workload 下验证得到的。
 
-| 实现 | 构建方式 | 总生成 token | 总耗时 | 吞吐 | TPOT（端到端） | TPOT（decode-only） | KV-cache 命中率 |
+| 场景 | 构建模式 | 总生成 token 数 | 总运行时间 | 吞吐 | TPOT（end-to-end） | TPOT（decode-only） | KV-cache 命中率 |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| 补丁版（`src`） | Release | 15358 | 5937.34 ms | 2586.68 tokens/s | 0.386596 ms/token | 0.0794365 ms/token | 66.6667% |
-| 原版（`src_origin`） | `nvcc -O2` | 15358 | 16717.3 ms | 918.687 tokens/s | 1.08851 ms/token | 0.785777 ms/token | N/A |
+| 补丁版（`src`） | Release | 15358 | 4604.86 ms | 3335.17 tokens/s | 0.299835 ms/token | 0.0841213 ms/token | 66.6667% |
+| 原版（`src_origin`） | `nvcc -O2` | 15358 | 16242.3 ms | 945.557 tokens/s | 1.05758 ms/token | 0.836126 ms/token | N/A |
 
-### 关键结论
+### 结论
 
-- 补丁版 release 路径的吞吐相较于原版基线提升约 `2.82x`。
-- 端到端 TPOT 从 `1.08851 ms/token` 降至 `0.386596 ms/token`。
-- 补丁版路径可以真实输出前缀缓存命中率，结果为 `66.6667%`。
+- 在同一条长前缀输入下，补丁版表现出明显的吞吐优势。
+- 相比原版，补丁版在该 benchmark 下的吞吐大约提升了 `3.53x`。
+- 补丁版的端到端 TPOT 也从约 `1.06 ms/token` 降到了约 `0.30 ms/token`。
 
 ## 为什么这个 fork 有意义
 
@@ -94,7 +94,7 @@
 ### 1）构建补丁版
 
 ```bash
-cd /media/tan/Tandisk/AIInfra/tiny-vllm-extend
+cd ./tiny-vllm-extend
 cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -B build-release
 cmake --build build-release -j4
 ```
@@ -102,7 +102,7 @@ cmake --build build-release -j4
 ### 2）构建原版基线
 
 ```bash
-cd /media/tan/Tandisk/AIInfra/tiny-vllm-extend
+cd ./tiny-vllm-extend
 mkdir -p build-origin
 /usr/local/cuda-11.3/bin/nvcc -std=c++17 -O2 -I src_origin -I include -I src -g -DDEBUG \
   -o build-origin/tiny-vllm-origin src_origin/main.cpp src_origin/kernels.cu -lcublas -lcudart
@@ -111,14 +111,14 @@ mkdir -p build-origin
 ### 3）运行补丁版
 
 ```bash
-cd /media/tan/Tandisk/AIInfra/tiny-vllm-extend
+cd ./tiny-vllm-extend
 ./build-release/tiny-vllm
 ```
 
 ### 4）运行原版对照
 
 ```bash
-cd /media/tan/Tandisk/AIInfra/tiny-vllm-extend
+cd ./tiny-vllm-extend
 ./build-origin/tiny-vllm-origin
 ```
 
@@ -137,7 +137,7 @@ cd /media/tan/Tandisk/AIInfra/tiny-vllm-extend
 示例：
 
 ```bash
-cd /media/tan/Tandisk/AIInfra/tiny-vllm-extend
+cd ./tiny-vllm-extend
 USE_PREFIX_CACHE=1 CHUNKED_PREFILL=1 USE_CUDA_GRAPH=1 MAX_NEW_TOKENS_GENERATED=0 ./build-release/tiny-vllm
 ```
 
