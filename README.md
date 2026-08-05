@@ -8,8 +8,8 @@
 
 当前工作区中保留了两条可直接对照的执行路径：
 
-- `src/`：补丁版实现，包含真实的 prefix-cache 统计、运行时指标、调度器级控制流和 benchmark 报告。
-- `src_origin/`：基线参考路径，用于与补丁版在同一 workload 下做直接对照。
+- `src/`：拓展版实现，包含真实的 prefix-cache 统计、运行时指标、调度器级控制流和 benchmark 报告。
+- `src_origin/`：基线参考路径，用于与拓展版在同一 workload 下做直接对照。
 
 ## 这个 fork 相比上游基线新增了什么
 
@@ -83,7 +83,7 @@
 
 ## 项目结构
 
-- `src/main.cpp`：补丁版运行主循环、指标统计、调度器流转和运行时开关
+- `src/main.cpp`：拓展版运行主循环、指标统计、调度器流转和运行时开关
 - `src/request_scheduler.h` / `src/request_scheduler.cpp`：请求生命周期与批处理控制
 - `src/prefix_cache.h` / `src/prefix_cache.cpp`：prefix 哈希复用与缓存统计
 - `src/kernels.cu` / `src/kernels.cuh`：CUDA kernel 路径
@@ -91,7 +91,7 @@
 
 ## 构建与运行
 
-### 1）构建补丁版
+### 1）构建拓展版
 
 ```bash
 cd ./tiny-vllm-extend
@@ -108,7 +108,7 @@ mkdir -p build-origin
   -o build-origin/tiny-vllm-origin src_origin/main.cpp src_origin/kernels.cu -lcublas -lcudart
 ```
 
-### 3）运行补丁版
+### 3）运行拓展版
 
 ```bash
 cd ./tiny-vllm-extend
@@ -124,7 +124,7 @@ cd ./tiny-vllm-extend
 
 ## 运行时开关
 
-补丁版执行流支持以下运行时控制参数：
+拓展版执行流支持以下运行时控制参数：
 
 - `USE_PREFIX_CACHE=1`：启用 prefix-cache 复用
 - `USE_PREFIX_CACHE=0`：关闭 prefix-cache 复用
@@ -150,5 +150,5 @@ USE_PREFIX_CACHE=1 CHUNKED_PREFILL=1 USE_CUDA_GRAPH=1 MAX_NEW_TOKENS_GENERATED=0
 3. chunked prefill 与调度器协同的执行流；
 4. 与原始实现的同 workload、同输入轨迹对照能力。
 
-从 benchmark 证据看，补丁版不仅报告了更完整的性能数据，而且在同一长上下文负载下实现了明显的 runtime 提升。
+从 benchmark 证据看，拓展版不仅报告了更完整的性能数据，而且在同一长上下文负载下实现了明显的 runtime 提升。
 
