@@ -26,6 +26,14 @@ public:
 
     size_t blockCount() const { return blocks_.size(); }
 
+    // 统计相关
+    size_t getHitCount() const { return hit_count_; }
+    size_t getTotalLookupCount() const { return total_lookup_count_; }
+    double getHitRate() const {
+        return total_lookup_count_ == 0 ? 0.0 : static_cast<double>(hit_count_) / static_cast<double>(total_lookup_count_);
+    }
+    void resetStats() { hit_count_ = 0; total_lookup_count_ = 0; }
+
 private:
     uint64_t hashPrefix(const std::vector<int>& tokens, size_t prefix_len, int layer) const;
     int allocateBlock();
@@ -34,4 +42,6 @@ private:
     size_t max_blocks_ = 1024;
     std::vector<PrefixCacheEntry> blocks_;
     std::unordered_map<uint64_t, int> prefix_map_;
+    mutable size_t hit_count_ = 0;
+    mutable size_t total_lookup_count_ = 0;
 };

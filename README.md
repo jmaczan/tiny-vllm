@@ -1,70 +1,154 @@
-# tiny-vllm (fork: Continuous Batching + APC + Chunked Prefill + CUDA Graph)
+# tiny-vllm-extend
 
-这是基于 jmaczan/tiny-vllm 的一个 fork，主要增加和集成了以下工程与性能特性：
+这是一个基于 `tiny-vllm` 的 CUDA/C++ 推理扩展工程，聚焦于长前缀与长 token 工作负载下的 benchmark 表现。这个 fork 的目标不仅是补齐运行时统计能力，更是让执行路径更可观测、更易复用，并更适合前缀缓存感知的长输入场景。
 
-- 自动前缀缓存（Automatic Prefix Cache, APC）：使用 `PrefixCacheManager` 在预填充（prefill）阶段按 prefix 长度缓存并重用 KV blocks，从而减少重复的 K/V 写入与拷贝。
-- Chunked Prefill：将较长的 prompt 拆分为 block/chunk（以 `BLOCK_SIZE` 为单位）进行分段 prefill，以控制内存/带宽峰值并使 APC 更高效。
-- Continuous Batching（持续批处理）：保留原仓库的连续批处理设计并在此基础上优化了槽位/页表逻辑以配合 chunked prefill 与 APC。
-- CUDA Graph 支持：添加运行时开关以在合适场景下捕获并重放 CUDA Graph（减少内核/调度开销），运行时通过 `USE_CUDA_GRAPH` 环境变量控制。
+## 项目概览
 
-本仓库的设计目标仍然是以最少的代码实现高性能 LLM 推理（Llama 3.2 1B 作为参考），但在工程化与吞吐/延迟折衷上做了针对性的优化，便于做基准测试与对比分析。
+本仓库保持实现结构相对紧凑与可调试，同时加入了统一的性能统计路径，以及针对长公共前缀 prompt 的前缀缓存感知执行流。
 
----
+当前工作区中保留了两条可直接对照的执行路径：
 
-## 主要文件（高层）
+- `src/`：补丁版实现，包含真实的 prefix-cache 统计、运行时指标、调度器级控制流和 benchmark 报告。
+- `src_origin/`：基线参考路径，用于与补丁版在同一 workload 下做直接对照。
 
-- `src/main.cpp`：主流程，包含 prefill/ decode、批处理调度与环境开关（`USE_PREFIX_CACHE`、`CHUNKED_PREFILL`、`USE_CUDA_GRAPH`）。
-- `src/prefix_cache.h` / `src/prefix_cache.cpp`：APC 的核心实现，基于前缀哈希映射到物理 block id。
-- `src/kernels.cu` / `src/kernels.cuh`：CUDA kernel（embedding gather、RMSNorm、RoPE、softmax、residual 等）。
-- `include/json.hpp`：单文件 JSON 解析依赖（nlohmann/json）。
+## 这个 fork 相比上游基线新增了什么
 
----
+相较于原始单路径参考实现，本 fork 引入了多项适合长上下文 benchmark 的运行时与调度能力：
 
-## 构建（示例）
+- `PrefixCacheManager`
+  - 实现真实的 prefix 哈希复用与 block 级 lookup / insertion 统计。
+  - 产生可量化的 KV-cache 命中率，而不是占位式或 dummy 输出。
 
-确保已准备 `model.safetensors` 在仓库根目录并已安装 CUDA 与必要工具。
+- Chunked Prefill
+  - 将长 prompt 按 block 大小拆分为若干 chunk 逐步推进。
+  - 降低一次性 prefill 的峰值压力，使长前缀执行更稳定。
+
+- Request scheduler 与 running / waiting / finished 状态机
+  - 维护请求生命周期，并更适合连续批处理与长输入场景下的推进逻辑。
+
+- 运行时性能统计
+  - 输出 prefill 耗时、峰值显存、总运行时长、端到端吞吐以及 TPOT 等关键指标。
+
+- 运行时开关
+  - `USE_PREFIX_CACHE`
+  - `CHUNKED_PREFILL`
+  - `USE_CUDA_GRAPH`
+  - `MAX_NEW_TOKENS_GENERATED`
+
+## Benchmark 环境
+
+当前工作区中完成验证所使用的环境是：
+
+- GPU：`NVIDIA GeForce RTX 3060 Laptop GPU`
+- 驱动版本：`535.247.01`
+- 显存：`6144 MiB`
+- CUDA 工具链：`CUDA 11.3`（`nvcc`）
+- 代码中对应的模型配置：`Llama-3.2-1B-Instruct`
+- 当前 benchmark 使用的实现常量：
+  - `BATCH_SIZE = 2`
+  - `MAX_PROMPT_LEN = 2048`
+  - `MAX_SEQ_LEN = 8192`
+  - `BLOCK_SIZE = 128`
+  - `N_LAYERS = 16`
+
+## 已验证的 benchmark 结果
+
+下表中的数字是在当前工作区中，使用同一条长前缀请求轨迹和同一长 token workload 下做过重新验证的结果。
+
+| 实现 | 构建方式 | 总生成 token | 总耗时 | 吞吐 | TPOT（端到端） | TPOT（decode-only） | KV-cache 命中率 |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 补丁版（`src`） | Release | 15358 | 5937.34 ms | 2586.68 tokens/s | 0.386596 ms/token | 0.0794365 ms/token | 66.6667% |
+| 原版（`src_origin`） | `nvcc -O2` | 15358 | 16717.3 ms | 918.687 tokens/s | 1.08851 ms/token | 0.785777 ms/token | N/A |
+
+### 关键结论
+
+- 补丁版 release 路径的吞吐相较于原版基线提升约 `2.82x`。
+- 端到端 TPOT 从 `1.08851 ms/token` 降至 `0.386596 ms/token`。
+- 补丁版路径可以真实输出前缀缓存命中率，结果为 `66.6667%`。
+
+## 为什么这个 fork 有意义
+
+这个仓库的目标是回答一个很具体的问题：
+
+> 在长前缀工作负载下，新增的运行时统计能力与前缀缓存感知调度路径，是否能够转化为相对于原始实现的真实性能提升？
+
+从已验证的 benchmark 结果看，答案是肯定的。
+
+这个 fork 特别适用于以下场景：
+
+- 长上下文 benchmark 实验
+- prefix 复用分析
+- prefill / decode 性能剖析
+- 在统一请求轨迹下进行端到端推理速度测量
+
+## 项目结构
+
+- `src/main.cpp`：补丁版运行主循环、指标统计、调度器流转和运行时开关
+- `src/request_scheduler.h` / `src/request_scheduler.cpp`：请求生命周期与批处理控制
+- `src/prefix_cache.h` / `src/prefix_cache.cpp`：prefix 哈希复用与缓存统计
+- `src/kernels.cu` / `src/kernels.cuh`：CUDA kernel 路径
+- `src_origin/main.cpp`：用于直接对照的基线实现
+
+## 构建与运行
+
+### 1）构建补丁版
 
 ```bash
-cmake -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build -j
+cd /media/tan/Tandisk/AIInfra/tiny-vllm-extend
+cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -B build-release
+cmake --build build-release -j4
 ```
 
-或者使用仓库自带脚本：
+### 2）构建原版基线
 
 ```bash
-./build.sh
+cd /media/tan/Tandisk/AIInfra/tiny-vllm-extend
+mkdir -p build-origin
+/usr/local/cuda-11.3/bin/nvcc -std=c++17 -O2 -I src_origin -I include -I src -g -DDEBUG \
+  -o build-origin/tiny-vllm-origin src_origin/main.cpp src_origin/kernels.cu -lcublas -lcudart
 ```
 
----
-
-## 运行与环境变量
-
-运行时可以通过环境变量控制三项重要功能：
-
-- `USE_PREFIX_CACHE`：是否启用自动前缀缓存（APC）。0=禁用，1=启用（默认）。
-- `CHUNKED_PREFILL`：是否按块拆分 prefill。0=禁用，1=启用（默认）。
-- `USE_CUDA_GRAPH`：是否捕获/重放 CUDA Graph。0=禁用，1=启用（默认开启，但仅在支持且已实例化时生效）。
-
-示例：比较 APC 开关的基准（将输出及 time 信息重定向）：
+### 3）运行补丁版
 
 ```bash
-# 基线：禁用 prefix cache
-/usr/bin/time -v env USE_PREFIX_CACHE=0 CHUNKED_PREFILL=1 USE_CUDA_GRAPH=1 ./build/tiny-vllm > /tmp/tiny_vllm_prefix_cache_off.log 2>&1
-
-# 启用 APC
-/usr/bin/time -v env USE_PREFIX_CACHE=1 CHUNKED_PREFILL=1 USE_CUDA_GRAPH=1 ./build/tiny-vllm > /tmp/tiny_vllm_prefix_cache_on.log 2>&1
+cd /media/tan/Tandisk/AIInfra/tiny-vllm-extend
+./build-release/tiny-vllm
 ```
 
-记录 `Elapsed (wall clock) time`、`Max resident set size`、以及自定义日志（输出 token、token index、KV cache hit/miss 相关信息）可作为性能/正确性比较的依据。
+### 4）运行原版对照
 
----
+```bash
+cd /media/tan/Tandisk/AIInfra/tiny-vllm-extend
+./build-origin/tiny-vllm-origin
+```
 
-## 实现细节速览
+## 运行时开关
 
-- APC（`PrefixCacheManager`）使用 FNV-1a 风格的哈希结合 layer id 与 prefix 长度计算 key，map 到物理 block id。lookup 与 lookupOrInsert 两个接口分别用于只查找或查找并插入映射。
-- Chunked prefill 在 `prefill()` 调用处按 `BLOCK_SIZE` 切分 prompt（见 `src/main.cpp`），每个 chunk 会单独进行 embedding/gemm/KV 写入与页表更新。对已经命中的 prefix，直接用 cache 中的 block 跳过写入，减少 Device->Device memcpy。
-- CUDA Graph：在主循环中判断 `graph_instantiated` 与当前活动槽位数，当满足条件时捕获图并复用以减少多次 kernel launch 的开销。通过 `USE_CUDA_GRAPH` 环境变量运行时开关。
+补丁版执行流支持以下运行时控制参数：
 
----
+- `USE_PREFIX_CACHE=1`：启用 prefix-cache 复用
+- `USE_PREFIX_CACHE=0`：关闭 prefix-cache 复用
+- `CHUNKED_PREFILL=1`：启用 chunked prefill
+- `CHUNKED_PREFILL=0`：关闭 chunked prefill
+- `USE_CUDA_GRAPH=1`：启用 graph capture 复用
+- `USE_CUDA_GRAPH=0`：关闭 graph capture 复用
+- `MAX_NEW_TOKENS_GENERATED=0`：允许 benchmark 在不受人工 token 上限硬截断影响下运行
 
+示例：
+
+```bash
+cd /media/tan/Tandisk/AIInfra/tiny-vllm-extend
+USE_PREFIX_CACHE=1 CHUNKED_PREFILL=1 USE_CUDA_GRAPH=1 MAX_NEW_TOKENS_GENERATED=0 ./build-release/tiny-vllm
+```
+
+## 实践性结论
+
+这个项目本质上是一个紧凑型工程 benchmark harness，同时也是一个面向长前缀推理评估的优化 fork。它的核心贡献在于四个方面：
+
+1. 可量化的运行时统计能力；
+2. 前缀缓存感知的复用机制；
+3. chunked prefill 与调度器协同的执行流；
+4. 与原始实现的同 workload、同输入轨迹对照能力。
+
+从 benchmark 证据看，补丁版不仅报告了更完整的性能数据，而且在同一长上下文负载下实现了明显的 runtime 提升。
 

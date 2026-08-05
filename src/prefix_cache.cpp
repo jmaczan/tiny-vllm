@@ -36,7 +36,9 @@ int PrefixCacheManager::lookupOrInsertPrefix(const std::vector<int>& tokens,
                                              int block_id) {
     uint64_t key = hashPrefix(tokens, prefix_len, layer);
     auto it = prefix_map_.find(key);
+    total_lookup_count_++;
     if (it != prefix_map_.end()) {
+        hit_count_++;
         return it->second;
     }
 
@@ -59,7 +61,9 @@ int PrefixCacheManager::lookupPrefix(const std::vector<int>& tokens,
                                      int layer) const {
     uint64_t key = hashPrefix(tokens, prefix_len, layer);
     auto it = prefix_map_.find(key);
+    total_lookup_count_++;
     if (it != prefix_map_.end()) {
+        hit_count_++;
         return it->second;
     }
     return -1;
