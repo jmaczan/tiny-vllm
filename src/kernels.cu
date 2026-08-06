@@ -1,6 +1,7 @@
 #include "cuda_to_hip.h"
 #include "kernels.cuh"
 #include <iostream>
+#include <vector>
 
 // TODO perhaps share these between main.cpp and kernels.cu to not duplicate them?
 
@@ -16,6 +17,11 @@ constexpr int BLOCK_SIZE = 16;    // TODO: tunable as well, defined the size of 
 constexpr int V_OFFSET = BLOCK_SIZE * KV_DIM * sizeof(__nv_bfloat16);
 constexpr int BLOCK_BYTES = V_OFFSET * 2;                    // * 2 because K and V
 constexpr int MAX_BLOCKS_PER_SEQ = MAX_SEQ_LEN / BLOCK_SIZE; // 2048 / 16 = 128
+
+
+float *d_inv_freq = nullptr; 
+float *d_cos_table = nullptr; // [max_seq_len, head_dim]
+float *d_sin_table = nullptr; // [max_seq_len, head_dim]
 
 // prefill / shared
 
@@ -88,7 +94,9 @@ void rmsNorm(__nv_bfloat16 *input, __nv_bfloat16 *output, __nv_bfloat16 *norm_we
 #endif
 }
 
-__global__ void ropeKernel(__nv_bfloat16 *input, int num_tokens, int proj_dim)
+void init_rope_frequencies(int head_dim, int max_seq_len, float rope_theta,
+                           float factor, float low_freq_factor,
+                           float high_freq_factor, int original_max_len)
 {
         // 2* 表示两个连续的线程为一组，每个线程刚好负责一对相邻的元素，完美覆盖整个向量    proj_dim 是向量的维度，比如2048
     if (2 * threadIdx.x + 1 + blockIdx.x * proj_dim < num_tokens * proj_dim)
@@ -105,10 +113,63 @@ __global__ void ropeKernel(__nv_bfloat16 *input, int num_tokens, int proj_dim)
         input[2 * threadIdx.x + blockIdx.x * proj_dim] = (__nv_bfloat16)((float)prev_2i * cos(angle) - (float)prev_2i_1 * sin(angle));    // x' = x*cos - y*sin
         input[2 * threadIdx.x + 1 + blockIdx.x * proj_dim] = (__nv_bfloat16)((float)prev_2i * sin(angle) + (float)prev_2i_1 * cos(angle));  // y' = x*sin + y*cos
     }
+
+    cudaMalloc(&d_cos_table, max_seq_len * head_dim * sizeof(float));
+    cudaMalloc(&d_sin_table, max_seq_len * head_dim * sizeof(float));
+    cudaMemcpy(d_cos_table, cos_table.data(),
+               max_seq_len * head_dim * sizeof(float), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_sin_table, sin_table.data(),
+               max_seq_len * head_dim * sizeof(float), cudaMemcpyHostToDevice);
 }
 
-// proj_dim: q_proj 2048, k_proj 512
-// num_threads: I want to use it for both q_proj and k_proj so need to parameterize num_threads (1024 for q_proj and 512 for k_proj)
+void free_rope_frequencies(void)
+{
+    if (d_inv_freq)
+    {
+        cudaFree(d_inv_freq);
+        d_inv_freq = nullptr;
+    }
+    if (d_cos_table)
+    {
+        cudaFree(d_cos_table);
+        d_cos_table = nullptr;
+    }
+    if (d_sin_table)
+    {
+        cudaFree(d_sin_table);
+        d_sin_table = nullptr;
+    }
+}
+
+__global__ void ropeKernel_llama3(__nv_bfloat16 *input, int num_tokens, int proj_dim,
+                                  int head_dim, const float *cos_table, const float *sin_table)
+{
+    int token_idx = blockIdx.x;
+    int tid = threadIdx.x;
+    int half_proj = proj_dim / 2;
+    int half_dim = head_dim / 2;
+
+    if (tid >= half_proj)
+        return;
+
+    int head_idx = tid / half_dim;
+    int pair_idx = tid % half_dim;
+
+    int base = token_idx * proj_dim + head_idx * head_dim;
+    int idx1 = base + pair_idx;
+    int idx2 = base + pair_idx + half_dim;
+
+    float x1 = (float)input[idx1];
+    float x2 = (float)input[idx2];
+
+    int table_idx = token_idx * head_dim + pair_idx * 2;
+    float c = cos_table[table_idx];
+    float s = sin_table[table_idx];
+
+    input[idx1] = (__nv_bfloat16)(x1 * c - x2 * s);
+    input[idx2] = (__nv_bfloat16)(x1 * s + x2 * c);
+}
+
 void rope(__nv_bfloat16 *input, int num_tokens, int proj_dim)
 {
     int num_threads = proj_dim / 2;
@@ -118,12 +179,15 @@ void rope(__nv_bfloat16 *input, int num_tokens, int proj_dim)
         return;
     }
 
-    ropeKernel<<<num_tokens, num_threads>>>(input, num_tokens, proj_dim);
+    ropeKernel_llama3<<<num_tokens, num_threads>>>(
+        input, num_tokens, proj_dim, HEAD_DIM, d_cos_table, d_sin_table);
+
 #ifdef DEBUG
-    cudaError error = cudaGetLastError();
-    if (error != cudaError::cudaSuccess)
+    cudaError_t error = cudaGetLastError();
+    if (error != cudaSuccess)
     {
-        std::cout << "CUDA last error: " << cudaGetLastError() << std::endl;
+        std::cout << "CUDA error: " << cudaGetErrorString(error)
+                  << " (code: " << error << ")" << std::endl;
     }
 #endif
 }
