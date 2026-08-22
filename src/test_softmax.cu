@@ -1,3 +1,46 @@
+
+// ============================================================
+// WHY THE FUSION IS CORRECT (not just tested, actually proven)
+// ============================================================
+//
+// The kernel merges two partial reductions - a left group with its
+// own local max (m_a) and local sum (d_a), and a right group (m_b, d_b) -
+// using this rule:
+//
+//     m = max(m_a, m_b)
+//     d = d_a * exp(m_a - m) + d_b * exp(m_b - m)
+//
+// Why this gives the exact same answer as computing everything with
+// one global max from the start:
+//
+// d_a was computed as sum(exp(x - m_a)) using the left group's own max.
+// To combine it with the right group, both sides need to be expressed
+// relative to the same reference point, m. Since:
+//
+//     x - m_a = (x - m) + (m_a - m)
+//
+// we get:
+//
+//     exp(x - m_a) = exp(x - m) * exp(m_a - m)
+//
+// The exp(m_a - m) term doesn't depend on x, so it factors out of the
+// sum - meaning d_a * exp(m_a - m) is exactly d_a rebased onto m.
+// Same logic applies to d_b. Adding the two rebased values gives
+// exactly the sum you'd get computing the whole group at once with m
+// from the start.
+//
+// This holds for merging any two already-correct partial results, and
+// a single element is trivially correct on its own (m = x_i, d = 1),
+// so by induction it holds all the way up the tree. The fusion only
+// changes the ORDER things are computed in, not the actual math - the
+// two versions are algebraically identical. The tests below back this
+// up empirically, comparing this fused kernel against the pre-fusion
+// two-pass version on several stress cases.
+// ============================================================
+
+
+
+
 // Quick correctness check for the fused online softmax.
 //
 // This runs softmax() on a handful of rows chosen to stress the merge logic
