@@ -256,46 +256,37 @@ void causalMask(__nv_bfloat16 *input, int num_tokens)
 
 __global__ void softmaxKernel(__nv_bfloat16 *input, int num_tokens)
 {
-    // softmaxxing per head
-    // might waste a lot of memory by hardcoding the size here but can't use num_tokens directly
-    __shared__ float row[1024]; // row[0] will contain max value after the loop
-    __shared__ float max_val;
-    // find max of the row to subtract it for numerical stability
+    __shared__ float m[1024]; // running max per tree node
+    __shared__ float d[1024]; // running denominator (sum of exp) per tree node
+
     int workIndex = blockIdx.x * num_tokens + threadIdx.x;
-    __nv_bfloat16 token = input[workIndex];
-    row[threadIdx.x] = (float)token;
+    float token = (float)input[workIndex];
+
+    // leaf: this thread owns a single element
+    m[threadIdx.x] = token;
+    d[threadIdx.x] = 1.0f;
     __syncthreads();
 
+    // one reduction: running max AND running sum, before the same __syncthreads()
     for (int i = 1; i < num_tokens; i = i * 2)
     {
         if (threadIdx.x % (i * 2) == 0 && threadIdx.x + i < num_tokens)
         {
-            row[threadIdx.x] = fmaxf(row[threadIdx.x], row[threadIdx.x + i]);
-        }
-        __syncthreads();
-    }
-    if (threadIdx.x == 0)
-    {
-        max_val = row[0]; // so I don't need to allocate another shared value for max_val
-    }
-    __syncthreads();
+            float m_a = m[threadIdx.x];
+            float d_a = d[threadIdx.x];
+            float m_b = m[threadIdx.x + i];
+            float d_b = d[threadIdx.x + i];
 
-    // turn into exp
-    row[threadIdx.x] = expf((float)token - max_val);
-    __syncthreads();
+            float m_new = fmaxf(m_a, m_b);
+            float d_new = d_a * expf(m_a - m_new) + d_b * expf(m_b - m_new);
 
-    // now I can compute the numerical stable sum, similar pattern - tree reduction
-    // reusing row memory
-    for (int i = 1; i < num_tokens; i = i * 2)
-    {
-        if (threadIdx.x % (i * 2) == 0 && threadIdx.x + i < num_tokens)
-        {
-            row[threadIdx.x] = row[threadIdx.x] + row[threadIdx.x + i];
+            m[threadIdx.x] = m_new;
+            d[threadIdx.x] = d_new;
         }
         __syncthreads();
     }
 
-    input[workIndex] = (__nv_bfloat16)(expf((float)token - max_val) / row[0]);
+    input[workIndex] = (__nv_bfloat16)(expf(token - m[0]) / d[0]);
 }
 
 // input are masked attention scores (NUM_Q_HEADS, num_tok, num_tok)
@@ -416,46 +407,35 @@ void ropeDecode(__nv_bfloat16 *input, int position_in_sequence, int proj_dim)
 // seq_len increases by 1 with every new token
 __global__ void softmaxKernelDecode(__nv_bfloat16 *input, int seq_len)
 {
-    // softmaxxing per head
-    // might waste a lot of memory by hardcoding the size here but can't use num_tokens directly
-    __shared__ float row[1024]; // row[0] will contain max value after the loop
-    __shared__ float max_val;
-    // find max of the row to subtract it for numerical stability
+    __shared__ float m[1024];
+    __shared__ float d[1024];
+
     int workIndex = blockIdx.x * MAX_SEQ_LEN + threadIdx.x;
-    __nv_bfloat16 token = input[workIndex];
-    row[threadIdx.x] = (float)token;
+    float token = (float)input[workIndex];
+
+    m[threadIdx.x] = token;
+    d[threadIdx.x] = 1.0f;
     __syncthreads();
 
     for (int i = 1; i < seq_len; i = i * 2)
     {
         if (threadIdx.x % (i * 2) == 0 && threadIdx.x + i < seq_len)
         {
-            row[threadIdx.x] = fmaxf(row[threadIdx.x], row[threadIdx.x + i]);
-        }
-        __syncthreads();
-    }
-    if (threadIdx.x == 0)
-    {
-        max_val = row[0]; // so I don't need to allocate another shared value for max_val
-    }
-    __syncthreads();
+            float m_a = m[threadIdx.x];
+            float d_a = d[threadIdx.x];
+            float m_b = m[threadIdx.x + i];
+            float d_b = d[threadIdx.x + i];
 
-    // turn into exp
-    row[threadIdx.x] = expf((float)token - max_val);
-    __syncthreads();
+            float m_new = fmaxf(m_a, m_b);
+            float d_new = d_a * expf(m_a - m_new) + d_b * expf(m_b - m_new);
 
-    // now I can compute the numerical stable sum, similar pattern - tree reduction
-    // reusing row memory
-    for (int i = 1; i < seq_len; i = i * 2)
-    {
-        if (threadIdx.x % (i * 2) == 0 && threadIdx.x + i < seq_len)
-        {
-            row[threadIdx.x] = row[threadIdx.x] + row[threadIdx.x + i];
+            m[threadIdx.x] = m_new;
+            d[threadIdx.x] = d_new;
         }
         __syncthreads();
     }
 
-    input[workIndex] = (__nv_bfloat16)(expf((float)token - max_val) / row[0]);
+    input[workIndex] = (__nv_bfloat16)(expf(token - m[0]) / d[0]);
 }
 
 // input are masked attention scores (NUM_Q_HEADS, seq_len)
