@@ -321,7 +321,7 @@ Oh btw, 32-bit floats are called single-precision floats. And then you hear abou
 
 This chapter might be a bit random, but I hope it's useful if you still begin with GPU programming. Data can live in host or device. 
 
-Host is your PC with CPU. It has slow, big memory - DRAM - the one you buy and plugin into a motherboard. Recently very price'y, because of big tech AI craze. DRAM is separate from CPU. CPU has also it's own, small and fast on-chip memory - SRAM (I will wait until you stop laughing, if you're Slavic). 
+Host is your PC with CPU. It has slow, big memory - DRAM - the one you buy and plugin into a motherboard. Recently very pricey, because of big tech AI craze. DRAM is separate from CPU. CPU has also it's own, small and fast on-chip memory - SRAM (I will wait until you stop laughing, if you're Slavic). 
 
 Device is your GPU. It also has slow, big memory - HBM, VRAM - but it's soldered to the card and you can extend it easily, as you do with DRAM in your PC. It has small, fast memory - SRAM - which you can use if you defined `__shared__` variables.
 
