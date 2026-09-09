@@ -437,7 +437,7 @@ Ok, now load the model. You know the safetensors file structure. There are many 
 
 Oh btw, the data type of model is bfloat. In CUDA, it's `__nv_bfloat16`
 
-If you implement weights in a similar way to what I described above, then to retrieve weights of K in layer, you'll write something alone these lines:
+If you implement weights in a similar way to what I described above, then to retrieve weights of K in layer, you'll write something along these lines:
 
 ```cpp
 weights.w_k[5] = (__nv_bfloat16 *)((char *)model_weights + offsets.at("model.layers.5.self_attn.k_proj.weight"));
