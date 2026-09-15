@@ -158,7 +158,7 @@ Let's dissect it.
 
 First of all, we don't really know neither the order of operations or data type from this. But! [Model card](https://huggingface.co/meta-llama/Llama-3.2-1B-Instruct) on Hugging Face page tell us that weights are in [BF16](https://en.wikipedia.org/wiki/Bfloat16_floating-point_format) format. We will go back to the format soon. 
 
-We need to understand the order of operations to know how to code it. Sebastian Raschka has a gallery of LLM architectures and it shows nicely how the operations are organized - see [here (the left one)](https://magazine.sebastianraschka.com/i/168650848/61-qwen3-dense).
+We need to understand the order of operations to know how to code it. Sebastian Raschka has a gallery of LLM architectures and it shows nicely how the operations are organized - see [here (the left one)](https://magazine.sebastianraschka.com/p/the-big-llm-architecture-comparison).
 
 By looking at the diagram from Sebastian, we see that the operations order in LLama 3.2 1B is like this:
 
@@ -455,11 +455,11 @@ To turn text into a sequence of tokens, you need a tokenizer. We will use an exi
 
 Going deep into tokenizers is out of the scope, what you really need to remember is that it takes a text and produces a sequence of tokens (ints), which represent your text but as a vector of ints. And LLM needs your text as this vector of ints.
 
-> Building your own tokenizer is quite a fun thing. I wrote mine 3 years ago and feel free to use it as a reference, if you'd like to learn more about tokenizers: https://github.com/jmaczan/bpe-tokenizer. There's also a great resource from Andrej Karpathy where he builds a tokenizer, and it's very useful and educational: video https://www.youtube.com/watch?v=zduSFxRajkE, code https://github.com/karpathy/minbpe and this article https://github.com/karpathy/minbpe/blob/master/lecture.md
+> Building your own tokenizer is quite a fun thing. I wrote mine 3 years ago and feel free to use it as a reference, if you'd like to learn more about tokenizers: [https://github.com/jmaczan/bpe-tokenizer](https://github.com/jmaczan/bpe-tokenizer). There's also a great resource from Andrej Karpathy where he builds a tokenizer, and it's a very useful and educational video [https://www.youtube.com/watch?v=zduSFxRajkE](https://www.youtube.com/watch?v=zduSFxRajkE), code [https://github.com/karpathy/minbpe](https://github.com/karpathy/minbpe) and this article [https://github.com/karpathy/minbpe/blob/master/lecture.md](https://github.com/karpathy/minbpe/blob/master/lecture.md)
 
 ## Embeddings
 
-Your text is translated into tokens and you feed the tokens into your LLM inference server. Tokens are more like indices, but they are not the data on which your LLM is going to work on. Large language models know how to map each token to a vector, where every token has the same vector length, but different vector values. These vectors are called embeddings. They embed the meaning of a token. Then you feed a list of tokens into the LLM, it retrieves one embedding per token, where tokens work as indexes that tell the model which embedding (vector) it should retrieve from it's weights. In our case, every embeddings has 2048 length. So for 5 input tokens, you get 5 vectors of 2048 length, which together is a matrix of dimension (5, 2048). We already know the type of every number in these embedding vectors - its bfloat16.
+Your text is translated into tokens and you feed the tokens into your LLM inference server. Tokens are more like indices, but they are not the data on which your LLM is going to work on. Large language models know how to map each token to a vector, where every token has the same vector length, but different vector values. These vectors are called embeddings. They embed the meaning of a token. Then you feed a list of tokens into the LLM, it retrieves one embedding per token, where tokens work as indexes that tell the model which embedding (vector) it should retrieve from its weights. In our case, every embeddings has 2048 length. So for 5 input tokens, you get 5 vectors of 2048 length, which together is a matrix of dimension (5, 2048). We already know the type of every number in these embedding vectors - its bfloat16.
 
 This might be a first CUDA kernel to write in this course. Your job is to retrieve the embeddings for all the input tokens.
 
@@ -485,7 +485,7 @@ You need a copy of your input tokens on GPU. So, you need to allocate a memory o
 int *gpu_input_tokens;
 ```
 
-To allocate the memory on GPU, we will use `cudaMalloc` function, which you already know from a chapter about GPU memory. The first argument of `cudaMalloc` is a pointer to our pointer (`void **`). The second argument is a size of memory to allocate. We know how many tokens we can maximum have as an input. The tokens are integers, so the size of memory to allocate is max number of input tokens * size of an int.
+To allocate the memory on GPU, we will use `cudaMalloc` function, which you already know from the chapter about GPU memory. The first argument of `cudaMalloc` is a pointer to our pointer (`void **`). The second argument is a size of memory to allocate. We know how many tokens we can maximum have as an input. The tokens are integers, so the size of memory to allocate is max number of input tokens * size of an int.
 
 ```cpp
 cudaMalloc(&gpu_input_tokens, MAX_PROMPT_LEN * sizeof(int));
@@ -502,11 +502,11 @@ We can write a CUDA kernel now.
 
 ## CUDA kernel engineering - embeddings
 
-> There exist much better resources than I can produce, so to learn CUDA, please check out [CUDA Programming Guide](https://docs.nvidia.com/cuda/cuda-programming-guide/01-introduction/introduction.html). I'll just briefly mention a basics here, but they might not be sufficient for you
+> There exist much better resources than I can produce, so to learn CUDA, please check out [CUDA Programming Guide](https://docs.nvidia.com/cuda/cuda-programming-guide/01-introduction/introduction.html). I'll just briefly mention the basics here, but they might not be sufficient for you
 
-Kernels are functions that are executed on a GPU. You launch the same function multiple times. Every launched function is a separate thread. They run the same code. They receive slightly different parameters, like index of a thread. Threads are grouped into blocks. When you launch a CUDA kernel, you define how many blocks you want to invoke and how many threads are there in every block. Threads are also grouped into warps. Every warp has 32 threads. So, when you run your kernel and you define that it has to run 5 blocks and each block has to run 64 threads, then it means that each block runs 2 warps, 32 threads in each warp. 
+Kernels are functions that are executed on a GPU. You launch the same function multiple times. Every launched function is a separate thread. They run the same code. They receive slightly different parameters, like index of a thread. Threads are grouped into blocks. When you launch a CUDA kernel, you define how many blocks you want to invoke and how many threads there are in every block. Threads are also grouped into warps. Every warp has 32 threads. So, when you run your kernel and you define that it has to run 5 blocks and each block has to run 64 threads, then it means that each block runs 2 warps, 32 threads in each warp. 
 
-When writing CUDA kernels, a lot of effort goes into thinking about memory. I mean, it's like thinking from the thread perspective: "what data should I process?", "where I should write the results?". It in practice means figuring out index of input data you need to read and where you should write the output to. Your main tools are built-in variables, like threadIdx, blockIdx and blockDim - see this link for more structured info https://docs.nvidia.com/cuda/cuda-programming-guide/02-basics/writing-cuda-kernels.html. Every thread has it's own values of these variables. This makes possible to running the same computation in parallel. This approach is called [SIMT](https://en.wikipedia.org/wiki/Single_instruction,_multiple_threads).
+When writing CUDA kernels, a lot of effort goes into thinking about memory. I mean, it's like thinking from the thread perspective: "what data should I process?", "where should I write the results?". It in practice means figuring out index of input data you need to read and where you should write the output to. Your main tools are built-in variables, like threadIdx, blockIdx and blockDim - see [this link for more structured info](https://docs.nvidia.com/cuda/cuda-programming-guide/02-basics/writing-cuda-kernels.html). Every thread has it's own values of these variables. This makes possible to running the same computation in parallel. This approach is called [SIMT](https://en.wikipedia.org/wiki/Single_instruction,_multiple_threads).
 
 Ok, so what we know is that for every input token, we want to retrieve an embedding which consists of 2048 bfloat16 numbers. The first approach that we can think about is - okay, so we have N tokens to retrieve, and each token needs to retrieve 2048 numbers. So we can run N blocks - one block per token - and 2048 threads in every block, so every thread would retrieve exactly a single number. Let's write an empty kernel and write down how we would like to execute it with N blocks and 2048 threads per block.
 
@@ -522,7 +522,7 @@ An invocation of this kernel:
 embeddingGatherKernel<<<num_input_tokens, 2048>>>();
 ```
 
-Looks good. Now let's think what data we need on the input and what we want to produce. We need input tokens and weights of embeddings of the loaded model. We also need some output to write to. We already copied tokens to GPU and we have weights of embeddings on GPU, too. So the output, what it should be like? We retrieve 2048 bfloat16 numbers for N tokens. So we need to have a memory, to which we can write that many numbers. Let's allocate it first:
+Looks good. Now let's think what data we need on the input and what we want to produce. We need input tokens and weights of embeddings of the loaded model. We also need some output to write to. We already copied tokens to GPU and we have weights of embeddings on GPU too. So the output, what should it be like? We retrieve 2048 bfloat16 numbers for N tokens. So we need to have a memory, to which we can write that many numbers. Let's allocate it first:
 
 ```cpp
 __nv_bfloat16* input_embeddings;
@@ -584,7 +584,7 @@ void embeddingGather(int *gpu_input_tokens, __nv_bfloat16 *gpu_input_embeds, __n
 }
 ```
 
-Wait a sec. We don't know a number of tokens. We don't use C++ data structures anymore, like vectors, so we can't read the number of elements of `gpu_input_tokens`. We need to pass it to this function explicitly:
+Wait a sec. We don't know the number of tokens. We don't use C++ data structures anymore, like vectors, so we can't read the number of elements of `gpu_input_tokens`. We need to pass it to this function explicitly:
 
 ```cpp
 void embeddingGather(int *gpu_input_tokens, __nv_bfloat16 *gpu_input_embeds, __nv_bfloat16 *embed_tokens, int num_input_tokens)
@@ -605,7 +605,7 @@ And then?
 std::cout << "Max threads per block: " << prop.maxThreadsPerBlock << std::endl;
 ```
 
-So, what we can do now? We can either launch 2 times more blocks or process 2 numbers in every thread instead of just one number. I go with the second option - it will be probably faster, doesn't require launching more threads and doesn't require any synchronization between threads or even between writing the output memory.
+So, what we can do now? We can either launch 2 times more blocks or process 2 numbers in every thread instead of just one number. I go with the second option - it will probably be faster, doesn't require launching more threads and doesn't require any synchronization between threads or even between writing the output memory.
 
 We have max 1024 threads per block. Embedding has 2048 numbers. We want to process two numbers from embedding per thread. What options do we have? We can either process current thread's number and the number next to it or we can process current thread's number and the number on the same position in the next half of the embedding, so current thread's index + 1024. Would the first approach work? First thread would process 0th and 1st number. Second thread would process 2nd and 3rd. Third 4th and 5th. Probably would work too (?), but more index arithmentic. The second option is easier again. Just add 1024 to both input and output indexes.
 
@@ -622,11 +622,11 @@ Run it. This time it will work.
 
 Congrats to you, you finished your first CUDA kernel!
 
-Let's move back from computation and low-level programming to semantics/meaning of what we just did. Notice that while all these embeddings we retrieve for input tokens have some encoded meaning within them, they don't know about each other. They don't know their position within a text we provided as an input. They don't know what tokens they are surrounded with. They don't know the conversation history, etc etc. This understanding will be build and stored as K and V projections.
+Let's move back from computation and low-level programming to semantics/meaning of what we just did. Notice that while all these embeddings we retrieve for input tokens have some encoded meaning within them, they don't know about each other. They don't know their position within a text we provided as an input. They don't know what tokens they are surrounded with. They don't know the conversation history, etc etc. This understanding will be built and stored as K and V projections.
 
 ## RMSNorm and parallel reduction in CUDA
 
-Look back at the sequence of operations in our model (section [Safetensors and your model](#safetensors-and-your-model)). After we retrieve the embeddings for our tokens, it's time for [RMSNorm](https://arxiv.org/abs/1910.07467). Unlike embeddings gather, it's a first operation that will run in layers. Our model, Llama 3.2 1B, has 16 layers. RMSNorm takes our retrieved embeddings and - using model weights for a rms norm `weights.input_layernorm[layer]` - runs RMSNorm function. RMSNorm is an operation that modifies all numbers in an embedding. To do that, first it needs to see all the elements and compute their [root mean square](https://en.wikipedia.org/wiki/Root_mean_square) sum.
+Look back at the sequence of operations in our model (section [Safetensors and your model](#safetensors-and-your-model)). After we retrieve the embeddings for our tokens, it's time for [RMSNorm](https://arxiv.org/abs/1910.07467). Unlike embeddings gather, it's a first operation that will run in layers. Our model, Llama 3.2 1B, has 16 layers. RMSNorm takes our retrieved embeddings and - using model weights for the rms norm `weights.input_layernorm[layer]` - runs RMSNorm function. RMSNorm is an operation that modifies all numbers in an embedding. To do that, first it needs to see all the elements and compute their [root mean square](https://en.wikipedia.org/wiki/Root_mean_square) sum.
 
 Based on the paper, the formula is:
 
@@ -652,13 +652,13 @@ __shared__ float rms_vector[1024];
 rms_vector[threadIdx.x] = (float)input[threadIdx.x] * (float)input[threadIdx.x] + (float)input[threadIdx.x + 1024] * (float)input[threadIdx.x + 1024];
 ```
 
-It would work, if we launched just a single block. But again, we want to be able to process multiple tokens, so we will launch as many blocks as tokens. Because of that, we need to figure out the correct item indexes for current thread. `threadIdx.x` is correct as a index of `rms_vector`, because `rms_vector` is always 1024 floats. `threadIdx.x` won't do as an input index, because we have multiple tokens on the input. We know each tokens takes 2048 `__nv_bfloat16`s of space. An index of a block tells us an index of a token. So, to move to the current token in the input, we need to multiply `blockIdx.x` by size of a token - by 2048. Our input index for a current thread is then:
+It would work, if we launched just a single block. But again, we want to be able to process multiple tokens, so we will launch as many blocks as tokens. Because of that, we need to figure out the correct item indexes for current thread. `threadIdx.x` is correct as a index of `rms_vector`, because `rms_vector` is always 1024 floats. `threadIdx.x` won't do as an input index, because we have multiple tokens on the input. We know each token takes 2048 `__nv_bfloat16`s of space. An index of a block tells us an index of a token. So, to move to the current token in the input, we need to multiply `blockIdx.x` by size of a token - by 2048. Our input index for a current thread is then:
 
 ```cpp
 int workIndex = threadIdx.x + blockIdx.x * 2048;
 ```
 
-Now, the reduction part. The idea is that every i-th element adds an element at the index of `self + i` to itself. And then, we multiply i by 2 and repeat. After every iteration, we need to make sure that all the threads finish writing to the `rms_vector` before we move to the next iteration. CUDA has [`__syncthreads()`](https://developer.nvidia.com/blog/using-shared-memory-cuda-cc/#thread_synchronization), which we can use for this purpose, and we put it after we write to `rms_vector`.. It can be done in a loop, but we will start with writing out everything explicitly, so the tree reduction algo will feel more understandable. The algorithm finished when we get to the `self + 1024`. The sum of all elements is stored at 0 index - `rms_vector[0]`. Let's write down the code so you can actually see it yourself. To me, many pieces weren't obvious until I wrote it down myself. Maybe you'd like to try it to, before reading the code? 
+Now, the reduction part. The idea is that every i-th element adds an element at the index of `self + i` to itself. And then, we multiply i by 2 and repeat. After every iteration, we need to make sure that all the threads finish writing to the `rms_vector` before we move to the next iteration. CUDA has [`__syncthreads()`](https://developer.nvidia.com/blog/using-shared-memory-cuda-cc/#thread_synchronization), which we can use for this purpose, and we put it after we write to `rms_vector`.. It can be done in a loop, but we will start with writing out everything explicitly, so the tree reduction algo will feel more understandable. The algorithm finishes when we get to the `self + 1024`. The sum of all elements is stored at 0 index - `rms_vector[0]`. Let's write down the code so you can actually see it yourself. To me, many pieces weren't obvious until I wrote it down myself. Maybe you'd like to try it to, before reading the code? 
 
 Please do whatever you feel more comfortable with, and I will write down the verbose (but correct) version of the RMSNorm kernel anyway:
 
@@ -775,7 +775,7 @@ There is a problem with these two lines. Let's recall at how the $\text{RMS(a)}$
 (input_layernorm): LlamaRMSNorm((2048,), eps=1e-05)
 ```
 
-This way, we prevent division by zero and NaNs propagation from happening. Let's just update a line where we compute $\text{RMS(a)}:
+This way, we prevent division by zero and NaNs propagation from happening. Let's just update a line where we compute $\text{RMS(a)}$:
 
 ```cpp
 if (threadIdx.x == 0)
@@ -900,7 +900,7 @@ Back to large language models. Matrix multiplication happens when computing atte
 
 ## The column-major to row-major transposition trick
 
-**TL;DR: if your data is in row-major format and you're going to use cuBLAS, then set transposition flag to `CUBLAS_OP_T` for matrices that are not tranposed yet, and `CUBLAS_OP_N` to matrices that are transposed in your formula**
+**TL;DR: if your data is in row-major format and you're going to use cuBLAS, then set transposition flag to `CUBLAS_OP_T` for matrices that are not transposed yet, and `CUBLAS_OP_N` to matrices that are transposed in your formula**
 
 Now the derivation and understanding:
 
@@ -912,7 +912,7 @@ It turns out we don't have to modify the data format to use cuBLAS matrix multip
 
 $$[A^T]_{ij}=[A]_{ji} \qquad C^T=B^T \times A^T \qquad (A^T)^T=A$$
 
-The "$^T$" means that we transpose the matrix. Transposing a matrix turns columns into rows, and rows into columns. When you store the matrix in row-major format, and cuBLAS reads it in column-major format, it's an equivalent of transposing the matrix.
+The `$^T$` means that we transpose the matrix. Transposing a matrix turns columns into rows, and rows into columns. When you store the matrix in row-major format, and cuBLAS reads it in column-major format, it's an equivalent of transposing the matrix.
 
 Let's see an example to understand it better: we want to compute $C = A \times B$, where A has dimensions (5, 2048) and B has dimensions (512, 2048). Our desired dimension of C is (5, 512). Right now, A and B dimensions are incompatible: $A(5, 2048)$ and $B(512, 2048)$. Do you remember that to get $C(M,N)$ we need $A(M,K)$ and $B(K,N)$? In other words, the second dimension of A and first dimension of B need to be equal. To achieve that, we need to transpose B. The formula becomes now: $C = A \times B^T$. The dimensions are ok now: $A(5,2048) \times B(2048, 512) = C(5, 512)$. Okay, so we would like to use cuBLAS now to compute the C.
 
