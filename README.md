@@ -455,7 +455,7 @@ To turn text into a sequence of tokens, you need a tokenizer. We will use an exi
 
 Going deep into tokenizers is out of the scope, what you really need to remember is that it takes a text and produces a sequence of tokens (ints), which represent your text but as a vector of ints. And LLM needs your text as this vector of ints.
 
-> Building your own tokenizer is quite a fun thing. I wrote mine 3 years ago and feel free to use it as a reference, if you'd like to learn more about tokenizers: [https://github.com/jmaczan/bpe-tokenizer](https://github.com/jmaczan/bpe-tokenizer). There's also a great resource from Andrej Karpathy where he builds a tokenizer, and it's a very useful and educational video [https://www.youtube.com/watch?v=zduSFxRajkE](https://www.youtube.com/watch?v=zduSFxRajkE), code [https://github.com/karpathy/minbpe](https://github.com/karpathy/minbpe) and this article [https://github.com/karpathy/minbpe/blob/master/lecture.md](https://github.com/karpathy/minbpe/blob/master/lecture.md)
+> Building your own tokenizer is quite a fun thing. I wrote mine 3 years ago and feel free to use [it](https://github.com/jmaczan/bpe-tokenizer) as a reference, if you'd like to learn more about tokenizers. There's also a great resource from Andrej Karpathy where he builds a tokenizer, and it's a very useful and educational [video](https://www.youtube.com/watch?v=zduSFxRajkE), [code](https://github.com/karpathy/minbpe) and [article](https://github.com/karpathy/minbpe/blob/master/lecture.md)
 
 ## Embeddings
 
@@ -626,7 +626,7 @@ Let's move back from computation and low-level programming to semantics/meaning 
 
 ## RMSNorm and parallel reduction in CUDA
 
-Look back at the sequence of operations in our model (section [Safetensors and your model](#safetensors-and-your-model)). After we retrieve the embeddings for our tokens, it's time for [RMSNorm](https://arxiv.org/abs/1910.07467). Unlike embeddings gather, it's a first operation that will run in layers. Our model, Llama 3.2 1B, has 16 layers. RMSNorm takes our retrieved embeddings and - using model weights for the rms norm `weights.input_layernorm[layer]` - runs RMSNorm function. RMSNorm is an operation that modifies all numbers in an embedding. To do that, first it needs to see all the elements and compute their [root mean square](https://en.wikipedia.org/wiki/Root_mean_square) sum.
+Look back at the sequence of operations in our model (section [Safetensors and your model](#safetensors-and-your-model)). After we retrieve the embeddings for our tokens, it's time for [RMSNorm](https://arxiv.org/abs/1910.07467). Unlike embeddings gather, it's a first operation that will run in layers. Our model, Llama 3.2 1B, has 16 layers. RMSNorm takes our retrieved embeddings and - using model weights for the RMS norm `weights.input_layernorm[layer]` - runs RMSNorm function. RMSNorm is an operation that modifies all numbers in an embedding. To do that, first it needs to see all the elements and compute their [root mean square](https://en.wikipedia.org/wiki/Root_mean_square) sum.
 
 Based on the paper, the formula is:
 
@@ -816,9 +816,46 @@ __global__ void rmsNormKernel(__nv_bfloat16 *input, __nv_bfloat16 *output, __nv_
 
 ## RoPE
 
-In our reference model, the next operation after RMSNorm is [RoPE](https://arxiv.org/pdf/2104.09864), a way of encoding tokens position into the hidden state (embedding). Very approachable description of positional encoding using RoPE is [here by Christopher Fleetwood](https://fleetwood.dev/posts/you-could-have-designed-SOTA-positional-encoding).
+In our reference model, after RMSNorm we create the $Q$ and $K$ projections and then apply [RoPE](https://arxiv.org/pdf/2104.09864), a way of encoding token's position into the hidden state (embedding). If we don't encode position, the model has no way of telling the difference between the sequence "I am a cat" and "cat am I a"! Very approachable description of positional encoding using RoPE is [here by Christopher Fleetwood](https://fleetwood.dev/posts/you-could-have-designed-SOTA-positional-encoding). 
 
-Try to write it on your own, if you have an energy for that. If not, here's my finished kernel. There are some things that I could optimize, like some values can be precomputed once and then shared - see theta and angles
+So far, we've taken a bunch of tokens and embedded them into vectors of 2048 dimension and applied RMSNorm. Before we do RoPE, we need to create two matrices, $K$ and $Q$. [Attention section](#attention) explains in detail what these matrices are. For now, all we need to know is that we take each token's 2048-dimensional vector and apply two linear projections: one produces a 2048-dimensional $Q$ (query) vector, and the other produces a 512-dimensional $K$ (key) vector. The math is as follows: 
+
+$$Q = XW_{Q}$$
+
+$$K = XW_{K}$$
+
+where, for this model,
+
+$$X \in \mathbb{R}^{T \times 2048}, \qquad W_{Q} \in \mathbb{R}^{2048 \times 2048}, \qquad W_{K} \in \mathbb{R}^{2048 \times 512}$$
+
+giving
+
+$$Q \in \mathbb{R}^{T \times 2048}, \qquad K \in \mathbb{R}^{T \times 512}.$$
+
+Here, $T$ is the number of tokens in the input. There is one final detail to understand before we get to RoPE. Take $Q$ and $K$ and divide them into segments with length 64. That means that for each token, $Q$ represents $2048 / 64 = 32$ different queries! Similarily, we have $512 / 64 = 8$ different keys for each token. The number 64 is defined as `HEAD_DIM` in the code. More about that later when we explain multi-headed attention. It is ok if you don't understand some of the concepts here. Sometimes you need to move forward and come back to a section again later to fully understand it. For now, just try to focus on the operations involved.  
+
+We are finally ready for RoPE. For each pair within a head in the input, we [rotate](https://en.wikipedia.org/wiki/Rotation_matrix) it as follows:  
+
+
+$$\mathrm{angle}_{p,i} = p \cdot \theta_{i}$$
+
+where
+
+$$\theta_{i} = \frac{1}{500000^{\frac{2i}{\mathrm{HEAD\_DIM}}}}$$
+
+The rotation is then:
+
+$$x^{\prime}_{2i} = x_{2i}\cos(\mathrm{angle}_{p,i}) - x_{2i+1}\sin(\mathrm{angle}_{p,i})$$
+
+$$x^{\prime}_{2i+1} = x_{2i}\sin(\mathrm{angle}_{p,i}) + x_{2i+1}\cos(\mathrm{angle}_{p,i})$$
+
+Or, equivalently, as a matrix multiplication:
+
+$$\begin{bmatrix} x^{\prime}_{2i} \cr x^{\prime}_{2i+1} \end{bmatrix} = \begin{bmatrix} \cos(\mathrm{angle}_{p,i}) & -\sin(\mathrm{angle}_{p,i}) \cr \sin(\mathrm{angle}_{p,i}) & \cos(\mathrm{angle}_{p,i}) \end{bmatrix} \begin{bmatrix} x_{2i} \cr x_{2i+1} \end{bmatrix}$$
+
+Here, $i$ identifies the pair of dimensions we are rotating within a head. Since each head has 64 dimensions, there are $64 / 2 = 32$ such pairs, so $i$ goes from 0 to 31. $p$ is the position of the token in the sequence.
+
+Try to write the kernel on your own, if you have an energy for that. If not, here's my finished kernel. There are some things that I could optimize, like some values can be precomputed once and then shared - see theta and angles
 
 ```cpp
 __global__ void ropeKernel(__nv_bfloat16 *input, int num_tokens, int proj_dim)
@@ -858,7 +895,21 @@ void rope(__nv_bfloat16 *input, int num_tokens, int proj_dim)
 }
 ```
 
-< TODO describe in more details >
+You may want to read this part after you've read [attention](#attention). For each key and query, attention computes how interesting the key is to the query using a [dot product](https://en.wikipedia.org/wiki/Dot_product).  
+
+For a query $q_{i}$ at position $i$ and a key $k_{j}$ at position $j$, the attention score is:
+
+$$q_{i}^{T} k_{j}$$
+
+Let's add RoPE to this and do a little bit of mathematics: 
+
+$$(R(i)q_{i})^{T}(R(j)k_{j})$$
+
+where $R(i)$ and $R(j)$ are the rotations corresponding to the positions $i$ and $j$. We can rearrange this as:
+
+$$\begin{aligned} (R(i)q_{i})^{T}(R(j)k_{j}) &= q_{i}^{T} R(i)^{T} R(j) k_{j} \cr &= q_{i}^{T} R(j-i) k_{j} \end{aligned}$$
+
+The important part is $R(j-i)$: the attention score now depends on the relative position $(j-i)$ between the query and the key. Pretty cool huh? Where two tokens are relative to each other, now affects their attention score. 
 
 ## Residual connections
 
@@ -912,7 +963,7 @@ It turns out we don't have to modify the data format to use cuBLAS matrix multip
 
 $$[A^T]_{ij}=[A]_{ji} \qquad C^T=B^T \times A^T \qquad (A^T)^T=A$$
 
-The `$^T$` means that we transpose the matrix. Transposing a matrix turns columns into rows, and rows into columns. When you store the matrix in row-major format, and cuBLAS reads it in column-major format, it's an equivalent of transposing the matrix.
+The $^T$ means that we transpose the matrix. Transposing a matrix turns columns into rows, and rows into columns. When you store the matrix in row-major format, and cuBLAS reads it in column-major format, it's an equivalent of transposing the matrix.
 
 Let's see an example to understand it better: we want to compute $C = A \times B$, where A has dimensions (5, 2048) and B has dimensions (512, 2048). Our desired dimension of C is (5, 512). Right now, A and B dimensions are incompatible: $A(5, 2048)$ and $B(512, 2048)$. Do you remember that to get $C(M,N)$ we need $A(M,K)$ and $B(K,N)$? In other words, the second dimension of A and first dimension of B need to be equal. To achieve that, we need to transpose B. The formula becomes now: $C = A \times B^T$. The dimensions are ok now: $A(5,2048) \times B(2048, 512) = C(5, 512)$. Okay, so we would like to use cuBLAS now to compute the C.
 
@@ -922,7 +973,7 @@ But cuBLAS expects column-major format of A and B. Row-major transposed will giv
 cublasGemmEx(cublas_handle, CUBLAS_OP_T, CUBLAS_OP_N, KV_DIM, num_active_slots, EMBEDDING_LENGTH, &k_proj_alpha, weights.w_k[layer], CUDA_R_16BF, EMBEDDING_LENGTH, rms_norms, CUDA_R_16BF, EMBEDDING_LENGTH, &k_proj_beta, k_proj_batched_buffer, CUDA_R_16BF, KV_DIM, CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
 ```
 
-I want to preempt the last confusion you might have if you actually dig into the code. The flags `CUBLAS_OP_T` and `CUBLAS_OP_N` tell the cuBLAS which matrices to transpose. And we just derived the formula $C^T=B \times A^T$, so why do we now tell the cuBLAS to transpose the first matrix $B$? To understand it, think about column- / row-major again. From cuBLAS perspective, our row-major $B$ is transposed $B^T$, because cuBLAS reads it as if it were column-major. So we need to tell cuBLAS to transpose it, to get back the $B$ we derived. Similarly, since we derived that the second argument should be $A^T$, and cuBLAS reads row-major $A$ as a column-major $A^T$, then don't transpose it again, because it's how we wanted to provide it to the cublasGemmEx. Q.E.D. :D
+I want to preempt the last confusion you might have if you actually dig into the code. The flags `CUBLAS_OP_T` and `CUBLAS_OP_N` tell the cuBLAS which matrices to transpose. And we just derived the formula $C^T=B \times A^T$, so why do we now tell the cuBLAS to transpose the first matrix $B$? To understand it, think about column- / row-major again. From cuBLAS perspective, our row-major $B$ is transposed $B^T$, because cuBLAS reads it as if it were column-major. So we need to tell cuBLAS to transpose it, to get back the $B$ we derived. Similarily, since we derived that the second argument should be $A^T$, and cuBLAS reads row-major $A$ as a column-major $A^T$, then don't transpose it again, because it's how we wanted to provide it to the cublasGemmEx. Q.E.D. :D
 
 > I will publish this section in slightly different form in [Paged Out! Issue #9 in the article "The cuBLAS transposition trick"](https://pagedout.institute/)
 
@@ -1060,11 +1111,25 @@ void silu(__nv_bfloat16 *a, __nv_bfloat16 *b, int num_tokens)
 
 ## Softmax
 
-[Softmax](https://en.wikipedia.org/wiki/Softmax_function) is a function that normalizes all elements in a vector. This one is a first, "sequential" version of a softmax. We will derive and implement the "online" version of it later. 
+[Softmax](https://en.wikipedia.org/wiki/Softmax_function) is a function that normalizes all elements in a vector. This one is a first, "sequential" version of a softmax. We will derive and implement the "online" version of it later. Here is the formula for softmax. 
 
-$$ \sigma(v)=\frac{e^{v_i}}{\sum_{j=1}{K}e^{v_j}} $$
+$$\sigma(v)_{i}=\frac{e^{v_{i}}}{\sum_{j=1}^{K}e^{v_{j}}}$$
 
-The way you can implement it is very similar to RMSNorm we implemented earlier.
+But that's not what we are gonna implement. The problem is that the $e^{v_{i}}$ is an [exponential function](https://en.wikipedia.org/wiki/Exponential_function). That means it can easily overflow. To avoid that, we subtract the $\max_{k} v_{k}$ from each $v_{i}$. This is the numerically stable version of softmax.
+
+$$\sigma(v)_{i} = \frac{e^{v_{i} - m}}{\sum_{j} e^{v_{j} - m}} \qquad\text{where}\qquad m = \max_{k} v_{k}$$
+
+Let's use some calculus to prove that it yields the same results.  
+
+$$\sigma(v - c)_{i} = \frac{e^{v_{i} - c}}{\sum_{j} e^{v_{j} - c}} = \frac{e^{v_{i}}\,e^{-c}}{e^{-c}\sum_{j} e^{v_{j}}} = \frac{e^{v_{i}}}{\sum_{j} e^{v_{j}}} = \sigma(v)_{i}$$
+
+If we choose $c = \max_{k} v_{k}$, every shifted logit is $\le 0$:
+
+$$v_{i} - \max_{k} v_{k} \le 0 \qquad\Rightarrow\qquad e^{v_{i} - \max_{k} v_{k}} \in (0, 1]$$
+
+so the exponentials cannot overflow!
+
+For this part you need to implement maximum and summation using the same parallel reduction technique, similar to RMSNorm that we implemented earlier. 
 
 ```cpp
 __global__ void softmaxKernel(__nv_bfloat16 *input, int num_tokens)
