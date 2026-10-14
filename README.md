@@ -37,7 +37,6 @@ Make yourself a hot beverage and let's begin
   - [Prefill vs decode](#prefill-vs-decode)
   - [Why KV cache exists](#why-kv-cache-exists)
   - [Attention](#attention)
-  - [GQA](#gqa)
   - [SiLU](#silu)
   - [Softmax](#softmax)
   - [Causal mask](#causal-mask)
@@ -1005,19 +1004,53 @@ Let's say we don't store K and V projection for current token. It would mean tha
 
 ## Attention
 
-Attention is an important part of LLM inference. It's where you do a lot of matrix multiplication using Q, K and V projections you computed earlier. A basic formula for scaled dot-product attention that comes from a paper [Attention is all you need](https://arxiv.org/pdf/1706.03762) is:
+Attention is probably the most important step in LLM inference. So important that researchers said ["Attention" is all you need](https://arxiv.org/pdf/1706.03762). So far, we've calculated the embeddings, the $K$, $Q$ matrices and encoded positional information. That tells the model what each token's semantic meaning is and where it sits within the sequence. But we still don't take into account how a token can change another token's meaning. To put it simply, Attention changes the embeddings of a token by looking at the tokens that come before that token. 
 
-$$\text{Attention}(Q,K,V)=\text{softmax}(\frac{QK^T}{\sqrt{d_k}})V$$
+Consider the sequence "Beside the wide river, after a long walk, we sat on the grassy bank". The token "bank" could be the side of a river, or a place that stores money. We have no way of knowing which one it refers to by looking at the bank alone. "river" and "grassy" are the earlier words that settle it. "wide" is also in front of "bank", but it describes the river. "long" and "walk" describe the day. In other words, attention is how "bank" looks back at all of those tokens and lets only some of them change its embedding. 
 
-< TODO: this section is difficult to write, but I want to make it good and useful to you. Putting code here now, and want to come back to writing it Later™ >
+The basic formula for scaled dot-product attention that comes from the paper [Attention is all you need](https://arxiv.org/pdf/1706.03762) is:
 
+$$\text{Attention}(Q, K, V) = \text{softmax}\left(\frac{QK^{T}}{\sqrt{d_k}}\right)V$$
 
-```cpp
+Let's dig deep into this formula and untangle it one step at a time. 
+
+We've talked about matrices $K$ and $Q$, but not what they actually mean. $Q$, the query matrix, is a $T \times 2048$ matrix. Each row corresponds to one token and represents that token's queries. Each query is a vector of $64$ dimensions that asks for some information related to that token. For instance, a query for "bank" could ask "which earlier words say what kind of bank I am?". The matrix $K$, the key matrix, is a $T \times 512$ matrix. Each row consists of multiple $64$-dimensional keys associated with a token and represents what that token can answer. The key for "river" might say "I name a body of water". The key for "grassy" might say "I describe a surface". The key for "walk" might say "I am something someone did". "bank" asks its question, and "river" and "grassy" are the keys that match it. "walk" has a key as well, but it answers a different question, so it should barely move "bank". 
+
+We said that each token has multiple queries and multiple keys, or more simply multiple head, associated with it, but to calculate the attention matrix we only consider one of heads at a time. Therefore, we loop over query heads to calculate attention matrix. 
+
+```cpp 
 for (int i = 0; i < NUM_Q_HEADS; ++i)
 {
     int k_head_idx = i / GQA_Q_TO_K_RATIO; // i / 4 <- it means 4 Q heads uses the same 1 K head
     __nv_bfloat16 *q_head = q_proj + i * HEAD_DIM;
     __nv_bfloat16 *k_head = k_proj[layer] + k_head_idx * HEAD_DIM;
+```
+
+We have multiple attention matrices, each capturing different information about the token's relation to each other. We will later explain how these attention matrices will be used to update the embeddings. For now let's focus on calculating it. 
+
+You may have already noticed that the number of queries and the keys are not the same! If they are both $64$-dimensional, there are $2048 / 64 = 32$ query vectors, but only $512 / 64 = 8$ key vectors and multiple queries reuse the same key vector. This is idea behind [Grouped Query Attention (GQA)](https://arxiv.org/pdf/2305.13245). In contrast, multi-headed attention has the same number of keys and queries. For now, you just need to know that keeping less number of keys, results in faster inference. Later in [Why KV cache exists](#why-kv-cache-exists), we will understand why that's the case. 
+
+
+But how do we calculate how much a query matches any given key? Or in other words, how important is a key in answering a query? Or in deep learning lingo, how much does a query "attend" to a key? We do that using a [dot product](https://en.wikipedia.org/wiki/Dot_product). Conceptually, given two vectors a dot product returns a number that shows how related the two vectors are. The formula for two 64-dimensional vectors is as follows:
+
+$$
+q^{T} k = \sum_{i=1}^{64} q_{i}\, k_{i}
+$$
+
+
+One dot product is one pair of tokens. Doing it for every pair can be done using a matrix multiplication. Let's say a query head $t$ is a slice of $Q$ with shape $T \times 64$, and the key head it reuses, head $t / 4$, is a slice of $K$ with the same shape. Multiply the query slice by the transpose of the key slice:
+
+$$
+S_t = Q_t K_{t/4}^{T}
+$$
+
+$K_{t/4}^{T}$ is $64 \times T$, so $S_t$ is $T \times T$. Entry $(i, j)$ is the dot product of token $i$'s query and token $j$'s key. We call the resulting matrix the score matrix $S$. The following schematics captures what is happening: 
+
+![attention-kq](./assets/attention.png)
+
+These slices sit inside $Q$ and $K$, so the next token starts 2048 elements later in $Q$ and 512 elements later in $K$. [cublasGemmEx](https://docs.nvidia.com/cuda/cublas/index.html#cublasgemmex) computes the whole $T \times T$ matrix in one call. We pass $K$ with `CUBLAS_OP_T` and $Q$ with `CUBLAS_OP_N`, and the leading dimensions are 512 and 2048. In our slices of $K$ and $Q$ a head is stored row by row: token 0's 64 numbers, then token 1's 64, and so on. cuBLAS reads those same bytes by columns, so each head looks transposed to it, $64 \times T$ instead of $T \times 64$. `CUBLAS_OP_T` on $K$'s head flips that view back, so the left matrix is again $T \times 64$. `CUBLAS_OP_N` on $Q$'s head leaves the transposed view in place, so the right matrix is $Q_t^{T}$, $64 \times T$. cuBLAS multiplies those and writes the result by columns. We read that buffer back by rows, which flips it once more, and the matrix we get is $Q_t K_{t/4}^{T}$. In a way, we first calculated $K_{t/4} Q_t^T$ and then transposed it to get $Q_t K_{t/4}^{T}$. 
+
+```cpp
     __nv_bfloat16 *attn_score_head = attn_scores + input_tokens.size() * input_tokens.size() * i;
 
     cublasStatus_t attn_score_status = cublasGemmEx(cublas_handle,
@@ -1039,19 +1072,62 @@ for (int i = 0; i < NUM_Q_HEADS; ++i)
                                                     input_tokens.size(),
                                                     CUBLAS_COMPUTE_32F,
                                                     CUBLAS_GEMM_DEFAULT);
-}
 
+} // end of the for loop 
+```
+
+So far, we've constructed a $T \times T$ matrix that for each score tells us how important a key is to a given query. Conceptually, for a row $i$, we wanna use these scores and the values they correspond to, to update the token in row $i$. Before doing that, we need to construct a third matrix $V$, the value matrix, which is a $T \times 512$ matrix and for each token it answers one question: If this token were to change another token's meaning, what is the value we are gonna be using to change the other token's meaning. The value matrix is calculated using the formula below, which is very similar to $K$ and $Q$ matrices:
+
+$$
+V = XW_{V}
+$$
+
+$X$ is the same $T \times 2048$ matrix as for $Q$ and $K$, and $W_{V}$ is $2048 \times 512$. 
+
+Let's take a step back and think about what we want to achieve at this stage. Take "bank" in "Beside the wide river, after a long walk, we sat on the grassy bank" example. Say the weights on "river" is $0.7$, on "grassy" is $0.2$, and on "walk" is $0.1$. If we want to incorporate all these changes into "bank", we can use a weighted sum as follows:  
+
+$$
+0.7\, V_{\text{river}} + 0.2\, V_{\text{grassy}} + 0.1\, V_{\text{walk}}
+$$
+
+"river" moves "bank" a lot. "walk" barely moves it. These are the weights we wanna end up with. The scores we just calculated are not there yet.  
+
+The problem with our current score matrix, which is different from the attention matrix, is that the values could be any number! they can be negative and they don't necessarily fall in a bounded range. For a weighted sum, we want the scores for a row to sum to 1, and be in the range $[0, 1]$. We do that by applying the [softmax function](https://en.wikipedia.org/wiki/Softmax_function). Feel free to jump to [softmax section](#softmax) to learn more about the details in depth and see the kernel's code. 
+
+But we're not quite there yet. If you look at the formula we are dividing by a value $\sqrt{d_k}$ before applying that softmax. Softmax only cares about the differences inside one row. A dot product adds 64 numbers, so the scores, and the gaps between them, come out about $\sqrt{64} = 8$ times too large. The largest score takes almost the whole row! meaning it becomes a value near one while all the other values become near zero. We divide by $\sqrt{d_k}$ to shrink those gaps back down, so several tokens can keep a share of the row, like "river", "grassy", and "walk" above. That way, we make sure not to miss out on some important information. 
+
+There is one final step before we return to the values matrix, and that's causal masking. We only want to change a token based on the token that come before it. The reason why tokens can only attend to previous tokens is that when generating a token, we only have the tokens that come before it! Our task is to predict the next token, using only the previous ones, and that's why LLMs do the masking during both the training and inference, even though during the training, or similarily in the prompt, they have the next tokens!  
+
+Causal masking actually happens before softmax. For all the tokens that come after a token we set the scores to minus infinity, so that when softmax is applied they are turned to zero and play no part in the later calculations. You can check [causal masking](#causal-mask) section to see how this is done in the code.
+
+After applying softmax, and causal masking we finally have the attention matrix, $A$. One final step is to multiply the attention matrix by the values matrix. Let's write it down to see how it looks like:
+
+$$
+A_tV_{t/4}
+$$
+
+For one head, $A_t$ is $T \times T$ and the value head it uses is a $T \times 64$ slice of $V$. We have only 8 values, similar to the keys, and we later explain why that helps in [Why KV cache exists](#why-kv-cache-exists). The product $A_t V_{t/4}$ is $T \times 64$. Row $i$ of that product is row $i$ of $A_t$ multiplied by the value head:
+
+$$
+(A_t)_{i} \, V_{t/4} = (A_t)_{i1} v_1 + (A_t)_{i2} v_2 + \cdots + (A_t)_{iT} v_T
+$$
+
+Row $i$ of $A_t$ is $1 \times T$, the value head is $T \times 64$, and the result is $1 \times 64$, the new vector for token $i$. If we take the example from before, here's what's happening: 
+![attention-av](./assets/attention-av.png)
+And Here's the concrete implementation spelled out in coe: 
+
+```cpp
 // causal mask, softmax and then attention scores * V
-        // attn scores * V
-        // (32, num_tok, num_tok) * (num_tok, 512)
-        // GQA - 4 Q heads share 1 V head
-        // attn_scores dim (32, num_tok, num_tok)
-        // attn_scores head dim (num_tok, num_tok)
-        // V dim (num_tok, 512)
-        // NUM_V_HEADS is 8 -> 512 / 8 = 64
-        // V_head dim (num_tok, 64)
-        // output head dim: scores head * V head -> (num_tok, num_tok) * (num_tok, 64) = (num_tok, 64)
-        // in total 32 output heads: so (num_tok, 64 * 32) = (num_tok, 2048)
+// attn scores * V
+// (32, num_tok, num_tok) * (num_tok, 512)
+// GQA - 4 Q heads share 1 V head
+// attn_scores dim (32, num_tok, num_tok)
+// attn_scores head dim (num_tok, num_tok)
+// V dim (num_tok, 512)
+// NUM_V_HEADS is 8 -> 512 / 8 = 64
+// V_head dim (num_tok, 64)
+// output head dim: scores head * V head -> (num_tok, num_tok) * (num_tok, 64) = (num_tok, 64)
+// in total 32 output heads: so (num_tok, 64 * 32) = (num_tok, 2048)
 for (int i = 0; i < NUM_Q_HEADS; ++i)
 {
     int v_head_idx = i / GQA_ATTN_SCORES_TO_V_RATIO; // GQA, 4 Q heads for 1 V head
@@ -1082,11 +1158,9 @@ for (int i = 0; i < NUM_Q_HEADS; ++i)
 }
 ```
 
-## GQA
+Every four query heads share one value head, so they mix the same values with different weights, and the four rows come out different. Lay all 32 heads side by side and we are back to a $T \times 2048$ matrix, the same width as the embedding. This is the output of attention. We have not added it onto the embeddings yet! 
 
-Unlike in a multi-head attention, one of the first attention methods, in [group-query attention (GQA)](https://arxiv.org/pdf/2305.13245) multiple query heads share the same key and value head. In our case, it's like: 4 query heads use the same 1 key and value head. See the code with computation K/V heads above.
-
-< TODO describe in more details >
+For a intuitive introduction to attention, you can check out [3blue1brown's video](https://www.youtube.com/watch?v=eMlx5fFNoYc).
 
 ## SiLU
 
