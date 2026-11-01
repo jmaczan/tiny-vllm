@@ -6,7 +6,43 @@ We will learn a lot along the way, make mistakes and derive the ideas and maths 
 
 This repository consists of two things: 1. a full source code of the inference server and 2. a course where I lead you through the process of implementing the engine. Feel invited to use it as a learning tool on your learning path or if you are a lecturer, feel welcome to use it as a teaching resource at your university
 
-The inference engine consists of:
+**We just launch a sponsorship options for those who want to reach high technical audience in this GitHub repo**
+
+<a href="mailto:jedrzej@maczan.pl?subject=README%20ad%20-%20Main%20(%242000%2Fmonth)">
+  <img src="assets/pixel-cta-large.svg" alt="Advertise here: Main sponsor tier, $2000 per month">
+</a>
+
+**$2000/mo**
+
+#
+
+<a href="mailto:jedrzej@maczan.pl?subject=README%20ad%20-%20Sponsor%20(%24500%2Fmonth)">
+  <img src="assets/pixel-cta-medium.svg" alt="Advertise here: Sponsor tier, $500 per month">
+</a>
+
+**$500/mo**
+
+#
+
+<a href="mailto:jedrzej@maczan.pl?subject=README%20ad%20-%20Supporter%20(%24100%2Fmonth)">
+  <img src="assets/pixel-cta-small.svg" alt="Advertise here: Supporter tier, $100 per month">
+</a>
+
+**$100/mo**
+
+#
+
+<a href="mailto:jedrzej@maczan.pl?subject=README%20ad%20-%20Supporter%20(%2410%2Fmonth)">
+  <b>Advertise here</b>
+</a>
+
+**$10/mo**
+
+#
+
+Thanks for supporting our project ❤️
+
+**The inference engine consists of:**
 
 - [x] load a real LLM model from Safetensors (Llama 3.2 1B Instruct)
 - [x] full LLM forward pass (prefill + decode)
@@ -20,6 +56,9 @@ The inference engine consists of:
 Make yourself a hot beverage and let's begin
 
 - [tiny-vllm](#tiny-vllm)
+      - [SUPPORTER](#supporter)
+        - [SUPPORTER](#supporter-1)
+        - [](#)
   - [Intro: LLM, vLLM, models, inference servers](#intro-llm-vllm-models-inference-servers)
   - [Technical prerequisities](#technical-prerequisities)
   - [Safetensors and your model](#safetensors-and-your-model)
