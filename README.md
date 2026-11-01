@@ -6,7 +6,9 @@ We will learn a lot along the way, make mistakes and derive the ideas and maths 
 
 This repository consists of two things: 1. a full source code of the inference server and 2. a course where I lead you through the process of implementing the engine. Feel invited to use it as a learning tool on your learning path or if you are a lecturer, feel welcome to use it as a teaching resource at your university
 
-**We just launch a sponsorship options for those who want to reach high technical audience in this GitHub repo**
+We just launch a sponsorship options!
+
+**Reach highly technical audience in this GitHub repo**
 
 <a href="mailto:jedrzej@maczan.pl?subject=README%20ad%20-%20Main%20(%242000%2Fmonth)">
   <img src="assets/pixel-cta-large.svg" alt="Advertise here: Main sponsor tier, $2000 per month">
