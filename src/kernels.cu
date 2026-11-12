@@ -264,7 +264,8 @@ __global__ void softmaxKernel(__nv_bfloat16 *input, int num_tokens)
 
     // leaf: this thread owns a single element
     m[threadIdx.x] = token;
-    d[threadIdx.x] = 1.0f;
+    // A masked score contributes no probability mass.
+    d[threadIdx.x] = token == -HUGE_VALF ? 0.0f : 1.0f;
     __syncthreads();
 
     // one reduction: running max AND running sum, before the same __syncthreads()
@@ -278,7 +279,9 @@ __global__ void softmaxKernel(__nv_bfloat16 *input, int num_tokens)
             float d_b = d[threadIdx.x + i];
 
             float m_new = fmaxf(m_a, m_b);
-            float d_new = d_a * expf(m_a - m_new) + d_b * expf(m_b - m_new);
+            // Avoid -inf - (-inf) when either subtree is entirely masked.
+            float d_new = (d_a > 0.0f ? d_a * expf(m_a - m_new) : 0.0f) +
+                          (d_b > 0.0f ? d_b * expf(m_b - m_new) : 0.0f);
 
             m[threadIdx.x] = m_new;
             d[threadIdx.x] = d_new;
@@ -286,7 +289,9 @@ __global__ void softmaxKernel(__nv_bfloat16 *input, int num_tokens)
         __syncthreads();
     }
 
-    input[workIndex] = (__nv_bfloat16)(expf(token - m[0]) / d[0]);
+    input[workIndex] = (__nv_bfloat16)((d[0] > 0.0f && token != -HUGE_VALF)
+                                          ? expf(token - m[0]) / d[0]
+                                          : 0.0f);
 }
 
 // input are masked attention scores (NUM_Q_HEADS, num_tok, num_tok)
@@ -414,7 +419,7 @@ __global__ void softmaxKernelDecode(__nv_bfloat16 *input, int seq_len)
     float token = (float)input[workIndex];
 
     m[threadIdx.x] = token;
-    d[threadIdx.x] = 1.0f;
+    d[threadIdx.x] = token == -HUGE_VALF ? 0.0f : 1.0f;
     __syncthreads();
 
     for (int i = 1; i < seq_len; i = i * 2)
@@ -427,7 +432,8 @@ __global__ void softmaxKernelDecode(__nv_bfloat16 *input, int seq_len)
             float d_b = d[threadIdx.x + i];
 
             float m_new = fmaxf(m_a, m_b);
-            float d_new = d_a * expf(m_a - m_new) + d_b * expf(m_b - m_new);
+            float d_new = (d_a > 0.0f ? d_a * expf(m_a - m_new) : 0.0f) +
+                          (d_b > 0.0f ? d_b * expf(m_b - m_new) : 0.0f);
 
             m[threadIdx.x] = m_new;
             d[threadIdx.x] = d_new;
@@ -435,7 +441,9 @@ __global__ void softmaxKernelDecode(__nv_bfloat16 *input, int seq_len)
         __syncthreads();
     }
 
-    input[workIndex] = (__nv_bfloat16)(expf(token - m[0]) / d[0]);
+    input[workIndex] = (__nv_bfloat16)((d[0] > 0.0f && token != -HUGE_VALF)
+                                          ? expf(token - m[0]) / d[0]
+                                          : 0.0f);
 }
 
 // input are masked attention scores (NUM_Q_HEADS, seq_len)
