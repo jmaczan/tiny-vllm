@@ -73,3 +73,13 @@ else()
         CUDA::cudart
     )
 endif()
+
+if(NOT USE_HIP)
+    include(CTest)
+    if(BUILD_TESTING)
+        add_executable(test_masked_softmax tests/test_masked_softmax.cu src/kernels.cu)
+        target_include_directories(test_masked_softmax PRIVATE src)
+        target_link_libraries(test_masked_softmax PRIVATE CUDA::cudart)
+        add_test(NAME masked_softmax COMMAND test_masked_softmax)
+    endif()
+endif()
