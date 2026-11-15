@@ -10,37 +10,9 @@ We just launch a sponsorship options!
 
 **Reach highly technical audience in this GitHub repo**
 
-<a href="mailto:jedrzej@maczan.pl?subject=README%20ad%20-%20Main%20(%242000%2Fmonth)">
-  <img src="assets/pixel-cta-large.svg" alt="Advertise here: Main sponsor tier, $2000 per month">
+<a href="mailto:jedrzej@maczan.pl?subject=README%20ad%20">
+  <img src="assets/pixel-cta-large.svg" alt="Advertise here">
 </a>
-
-**$2000/mo**
-
-#
-
-<a href="mailto:jedrzej@maczan.pl?subject=README%20ad%20-%20Sponsor%20(%24500%2Fmonth)">
-  <img src="assets/pixel-cta-medium.svg" alt="Advertise here: Sponsor tier, $500 per month">
-</a>
-
-**$500/mo**
-
-#
-
-<a href="mailto:jedrzej@maczan.pl?subject=README%20ad%20-%20Supporter%20(%24100%2Fmonth)">
-  <img src="assets/pixel-cta-small.svg" alt="Advertise here: Supporter tier, $100 per month">
-</a>
-
-**$100/mo**
-
-#
-
-<a href="mailto:jedrzej@maczan.pl?subject=README%20ad%20-%20Supporter%20(%2410%2Fmonth)">
-  <b>Advertise here</b>
-</a>
-
-**$10/mo**
-
-#
 
 Thanks for supporting our project ❤️
 
