@@ -170,8 +170,11 @@ void free_rope_frequencies(void)
     }
 }
 
+// start_pos is the position of the first token in input: 0 for prefill,
+// current sequence length for decode
 __global__ void ropeKernel_llama3(__nv_bfloat16 *input, int num_tokens, int proj_dim,
-                                  int head_dim, const float *cos_table, const float *sin_table)
+                                  int head_dim, const float *cos_table, const float *sin_table,
+                                  int start_pos)
 {
     int token_idx = blockIdx.x;
     int tid = threadIdx.x;
@@ -191,7 +194,7 @@ __global__ void ropeKernel_llama3(__nv_bfloat16 *input, int num_tokens, int proj
     float x1 = (float)input[idx1];
     float x2 = (float)input[idx2];
 
-    int table_idx = token_idx * head_dim + pair_idx * 2;
+    int table_idx = (start_pos + token_idx) * head_dim + pair_idx * 2;
     float c = cos_table[table_idx];
     float s = sin_table[table_idx];
 
@@ -209,7 +212,7 @@ void rope(__nv_bfloat16 *input, int num_tokens, int proj_dim)
     }
 
     ropeKernel_llama3<<<num_tokens, num_threads>>>(
-        input, num_tokens, proj_dim, HEAD_DIM, d_cos_table, d_sin_table);
+        input, num_tokens, proj_dim, HEAD_DIM, d_cos_table, d_sin_table, 0);
 
 #ifdef DEBUG
     cudaError_t error = cudaGetLastError();
@@ -373,21 +376,6 @@ void embeddingGatherDecode(int *gpu_last_tokens, int num_tokens, __nv_bfloat16 *
 #endif
 }
 
-__global__ void ropeKernelDecode(__nv_bfloat16 *input, int position_in_sequence, int proj_dim)
-{
-    if (2 * threadIdx.x + 1 < proj_dim) // TODO: check correctness
-    {
-        // TODO: precompute thetas, angles and perhaps sin/cos vals and reuse it across all kernel invocations
-        int double_i = 2 * (threadIdx.x % 32);
-        float theta = 1.0 / (pow(500000.0, ((float)double_i / HEAD_DIM)));
-        float angle = position_in_sequence * theta;
-        __nv_bfloat16 prev_2i = input[2 * threadIdx.x];
-        __nv_bfloat16 prev_2i_1 = input[2 * threadIdx.x + 1];
-        input[2 * threadIdx.x] = (__nv_bfloat16)((float)prev_2i * cos(angle) - (float)prev_2i_1 * sin(angle));
-        input[2 * threadIdx.x + 1] = (__nv_bfloat16)((float)prev_2i * sin(angle) + (float)prev_2i_1 * cos(angle));
-    }
-}
-
 // proj_dim: q_proj 2048, k_proj 512
 // num_threads: I want to use it for both q_proj and k_proj so need to parameterize num_threads (1024 for q_proj and 512 for k_proj)
 void ropeDecode(__nv_bfloat16 *input, int position_in_sequence, int proj_dim)
@@ -399,7 +387,9 @@ void ropeDecode(__nv_bfloat16 *input, int position_in_sequence, int proj_dim)
         return;
     }
 
-    ropeKernelDecode<<<1, num_threads>>>(input, position_in_sequence, proj_dim);
+    // one token, same kernel as prefill so both paths rotate Q and K the same way
+    ropeKernel_llama3<<<1, num_threads>>>(
+        input, 1, proj_dim, HEAD_DIM, d_cos_table, d_sin_table, position_in_sequence);
 #ifdef DEBUG
     cudaError error = cudaGetLastError();
     if (error != cudaError::cudaSuccess)
